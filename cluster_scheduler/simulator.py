@@ -63,16 +63,16 @@ class Simulator:
             self.completed_jobs.extend(completed)
 
     def _try_place_from_queue(self, scheduler: Scheduler) -> None:
-        """Try to place queued jobs using the scheduler."""
-        remaining: deque[Job] = deque()
+        """Repeatedly ask the scheduler to place jobs until it can't place any more."""
         while self.wait_queue:
-            job = self.wait_queue.popleft()
-            choice = scheduler.select_machine(job, self.machines)
-            if choice is not None and self.machines[choice].can_fit(job):
-                self.machines[choice].place_job(job, self.current_time)
-            else:
-                remaining.append(job)
-        self.wait_queue = remaining
+            queue_list = list(self.wait_queue)
+            result = scheduler.schedule(queue_list, self.machines)
+            if result is None:
+                break
+            ji, mi = result
+            job = queue_list[ji]
+            self.machines[mi].place_job(job, self.current_time)
+            self.wait_queue.remove(job)
 
     def _next_completion_time(self) -> float | None:
         """Find the earliest job completion time across all machines."""
@@ -113,14 +113,11 @@ class Simulator:
                 # Try to place queued jobs first (they've been waiting longer)
                 self._try_place_from_queue(scheduler)
 
-                # Now handle the newly arrived job
+                # Add newly arrived job to the queue, then let scheduler decide
                 job = jobs[job_index]
                 job_index += 1
-                choice = scheduler.select_machine(job, self.machines)
-                if choice is not None and self.machines[choice].can_fit(job):
-                    self.machines[choice].place_job(job, self.current_time)
-                else:
-                    self.wait_queue.append(job)
+                self.wait_queue.append(job)
+                self._try_place_from_queue(scheduler)
 
             elif next_completion is not None:
                 # Advance to next completion
