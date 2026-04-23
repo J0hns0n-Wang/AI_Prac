@@ -1,10 +1,47 @@
 """Metrics computation for evaluating scheduler performance."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
 from cluster_scheduler.models import Job
+
+
+# Two-sided normal critical values for common alpha levels. Using a normal
+# approximation keeps mean_ci dependency-free (no scipy). With small N this
+# slightly understates the CI vs. a t-distribution, which is acceptable for
+# the project's scale of ~5-20 seeds.
+_Z_BY_ALPHA: dict[float, float] = {
+    0.01: 2.576,
+    0.05: 1.96,
+    0.10: 1.645,
+}
+
+
+def mean_ci(values: Sequence[float], alpha: float = 0.05) -> tuple[float, float, float]:
+    """Return ``(mean, ci_lo, ci_hi)`` for a 1-D array of values.
+
+    Uses a normal-approximation CI on the standard error of the mean.
+    Returns ``(mean, mean, mean)`` for length-0 or length-1 inputs.
+
+    Args:
+        values: Sample values.
+        alpha: Two-sided significance level (e.g. 0.05 for a 95% CI).
+            Supported: 0.01, 0.05, 0.10.
+
+    Raises:
+        KeyError: If ``alpha`` is not one of the supported values.
+    """
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return 0.0, 0.0, 0.0
+    mean = float(arr.mean())
+    if arr.size == 1:
+        return mean, mean, mean
+    sem = float(arr.std(ddof=1) / np.sqrt(arr.size))
+    z = _Z_BY_ALPHA[alpha]
+    return mean, mean - z * sem, mean + z * sem
 
 
 @dataclass

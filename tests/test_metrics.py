@@ -4,7 +4,7 @@ import pytest
 import numpy as np
 
 from cluster_scheduler.models import Job
-from cluster_scheduler.metrics import compute_metrics, SchedulerMetrics
+from cluster_scheduler.metrics import SchedulerMetrics, compute_metrics, mean_ci
 from cluster_scheduler.benchmark import run_benchmark, BenchmarkResult
 from cluster_scheduler.scheduler import FirstFitScheduler, BestFitScheduler
 from cluster_scheduler.simulator import SimulatorConfig
@@ -96,3 +96,32 @@ class TestBenchmark:
         r2 = run_benchmark(schedulers, wl_cfg, sim_cfg, seeds=[42])
 
         assert r1[0].mean("avg_completion_time") == r2[0].mean("avg_completion_time")
+
+
+class TestMeanCI:
+    def test_empty_returns_zeros(self):
+        mean, lo, hi = mean_ci([])
+        assert (mean, lo, hi) == (0.0, 0.0, 0.0)
+
+    def test_single_value_collapses(self):
+        mean, lo, hi = mean_ci([4.2])
+        assert mean == lo == hi == pytest.approx(4.2)
+
+    def test_known_ci_matches_normal_approx(self):
+        # For values [1, 2, 3, 4, 5]: mean=3, std(ddof=1)=sqrt(2.5), sem=sem(5).
+        values = [1.0, 2.0, 3.0, 4.0, 5.0]
+        mean, lo, hi = mean_ci(values, alpha=0.05)
+        assert mean == pytest.approx(3.0)
+        expected_sem = (np.std(values, ddof=1)) / np.sqrt(len(values))
+        assert lo == pytest.approx(3.0 - 1.96 * expected_sem)
+        assert hi == pytest.approx(3.0 + 1.96 * expected_sem)
+
+    def test_unsupported_alpha_raises(self):
+        with pytest.raises(KeyError):
+            mean_ci([1.0, 2.0], alpha=0.123)
+
+    def test_ci_wider_for_tighter_alpha(self):
+        values = [1.0, 2.0, 3.0, 4.0, 5.0]
+        _, lo_95, hi_95 = mean_ci(values, alpha=0.05)
+        _, lo_99, hi_99 = mean_ci(values, alpha=0.01)
+        assert (hi_99 - lo_99) > (hi_95 - lo_95)

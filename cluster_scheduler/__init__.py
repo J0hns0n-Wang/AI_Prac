@@ -2,8 +2,9 @@
 
 from cluster_scheduler.benchmark import BenchmarkResult, run_benchmark
 from cluster_scheduler.env import ClusterSchedulingEnv, RewardConfig
+from cluster_scheduler.evaluation import RegimeSpec, default_regimes, summarize, sweep
 from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer, RichFeaturizer
-from cluster_scheduler.metrics import SchedulerMetrics, compute_metrics
+from cluster_scheduler.metrics import SchedulerMetrics, compute_metrics, mean_ci
 from cluster_scheduler.models import Job, Machine
 from cluster_scheduler.scheduler import (
     BestFitScheduler,
@@ -27,6 +28,7 @@ __all__ = [
     "Machine",
     "RLScheduler",
     "RandomScheduler",
+    "RegimeSpec",
     "RewardConfig",
     "RichFeaturizer",
     "Scheduler",
@@ -37,5 +39,9 @@ __all__ = [
     "WorkloadConfig",
     "WorkloadGenerator",
     "compute_metrics",
+    "default_regimes",
+    "mean_ci",
     "run_benchmark",
+    "summarize",
+    "sweep",
 ]
