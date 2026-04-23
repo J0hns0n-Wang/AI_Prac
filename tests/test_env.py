@@ -65,18 +65,18 @@ class TestEnvBasics:
         assert isinstance(terminated, bool)
         assert not truncated
 
-    def test_step_with_invalid_action_penalizes(self):
+    def test_step_with_invalid_action_raises(self):
         env = make_env(num_machines=2)
         _, info = env.reset(seed=42)
         mask = info["action_mask"]
 
-        # If both are valid, fill one machine first
-        # Just check that if we could find an invalid action, it returns penalty
+        # Find a machine that *can't* fit, if any. With the default
+        # make_env config a fresh cluster usually has both machines valid;
+        # we skip the assertion in that case rather than stub state.
         if not mask.all():
-            invalid_action = np.where(~mask)[0][0]
-            _, reward, _, _, info = env.step(invalid_action)
-            assert reward == -1.0
-            assert info.get("invalid_action", False)
+            invalid_action = int(np.where(~mask)[0][0])
+            with pytest.raises(ValueError):
+                env.step(invalid_action)
 
 
 class TestEpisode:
@@ -216,3 +216,40 @@ class TestRewardConfig:
         r0, _ = _rollout_greedy(no_bonus)
         r1, _ = _rollout_greedy(bonus)
         assert r1[-1] - r0[-1] == pytest.approx(7.5)
+
+
+class TestActionMasks:
+    """MaskablePPO-compatible masking contract."""
+
+    def test_action_masks_method_exists_and_matches_can_fit(self):
+        env = make_env()
+        env.reset(seed=42)
+        mask = env.action_masks()
+        assert mask.shape == (env.sim_config.num_machines,)
+        assert mask.dtype == bool
+        assert env.current_job is not None
+        expected = np.array(
+            [m.can_fit(env.current_job) for m in env.machines], dtype=bool
+        )
+        np.testing.assert_array_equal(mask, expected)
+
+    def test_action_masks_matches_info_mask(self):
+        env = make_env()
+        _, info = env.reset(seed=42)
+        np.testing.assert_array_equal(env.action_masks(), info["action_mask"])
+
+    def test_masked_random_rollout_never_raises(self):
+        """Under a masked random policy, step() must never be handed an illegal action."""
+        rng = np.random.default_rng(0)
+        env = make_env(num_jobs=30)
+        _, info = env.reset(seed=42)
+        terminated = False
+        steps = 0
+        while not terminated and steps < 2000:
+            mask = env.action_masks()
+            valid = np.where(mask)[0]
+            assert len(valid) > 0, "Mask must have at least one valid action when step is reachable"
+            action = int(rng.choice(valid))
+            _, _, terminated, _, info = env.step(action)
+            steps += 1
+        assert terminated

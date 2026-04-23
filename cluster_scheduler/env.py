@@ -46,8 +46,13 @@ class RewardConfig:
 class ClusterSchedulingEnv(gym.Env):
     """Gymnasium environment that wraps the cluster simulator.
 
-    At each step, the agent picks which machine to place the current job on.
-    The episode ends when all jobs have been placed and completed.
+    Decision semantics:
+        The agent chooses the *machine*. The env chooses the *job*: it picks
+        the first queued job (FIFO) that can fit on at least one machine in
+        the current cluster state. Jobs that cannot fit anywhere remain in the
+        queue; the sim advances to the next completion event and re-checks.
+        This keeps the action space small (``Discrete(num_machines)``) and lets
+        a categorical policy reason purely about placement.
 
     Observation: fixed-length vector containing:
         - Per machine: (cpu_utilization, memory_utilization) × num_machines
@@ -56,8 +61,15 @@ class ClusterSchedulingEnv(gym.Env):
 
     Action: Discrete(num_machines) — index of the machine to place the job on.
 
-    Reward: negative waiting time for the placed job (0 if placed immediately,
-            negative if it had to wait). Encourages minimizing delays.
+    Action masking:
+        Use ``action_masks()`` (sb3-contrib MaskablePPO convention) to restrict
+        the policy to machines that can fit the current job. ``info["action_mask"]``
+        is also returned for callers that prefer the info-dict route.
+        The env does not validate the action in ``step`` — call sites that
+        bypass masking must supply a fittable machine.
+
+    Reward: configurable via ``RewardConfig``. Default is dense and returns
+            ``-waiting_time`` on each placement.
     """
 
     metadata = {"render_modes": []}
@@ -139,6 +151,15 @@ class ClusterSchedulingEnv(gym.Env):
             for i, m in enumerate(self.machines):
                 mask[i] = m.can_fit(self.current_job)
         return mask
+
+    def action_masks(self) -> np.ndarray:
+        """Return the current action mask.
+
+        This is the method name sb3-contrib's ``MaskablePPO`` / ``ActionMasker``
+        look for. Returns a boolean array of length ``num_machines`` where
+        ``True`` means the machine can fit the current job.
+        """
+        return self._get_action_mask()
 
     def _release_completed_jobs(self) -> None:
         """Release all jobs that have finished by current_time."""
@@ -241,14 +262,14 @@ class ClusterSchedulingEnv(gym.Env):
 
         machine = self.machines[action]
 
-        # If invalid action, penalize and let agent try again
+        # Callers must supply a fittable machine. Under MaskablePPO this is
+        # guaranteed by the action mask; direct callers should consult
+        # action_masks() before stepping.
         if not machine.can_fit(self.current_job):
-            return (
-                self._get_obs(),
-                -1.0,  # penalty for invalid action
-                False,
-                False,
-                {"action_mask": self._get_action_mask(), "invalid_action": True},
+            raise ValueError(
+                f"Action {action} chose Machine {machine.machine_id} which cannot "
+                f"fit Job {self.current_job.job_id} (cpu={self.current_job.cpu}, "
+                f"mem={self.current_job.memory}). Respect action_masks()."
             )
 
         # Place the job
