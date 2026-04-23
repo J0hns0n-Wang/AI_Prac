@@ -1,5 +1,8 @@
 """Gymnasium environment for cluster scheduling."""
 
+from dataclasses import dataclass
+from typing import Literal
+
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
@@ -7,6 +10,37 @@ from gymnasium import spaces
 from cluster_scheduler.models import Job, Machine
 from cluster_scheduler.simulator import SimulatorConfig
 from cluster_scheduler.workload import WorkloadConfig, WorkloadGenerator
+
+
+DURATION_REF: float = 100.0
+"""Fixed reference for normalizing job durations in observations.
+
+Decoupled from any particular ``WorkloadConfig.duration_range`` so that a policy
+trained on one workload still produces in-range observations on held-out
+workloads with different duration distributions.
+"""
+
+
+@dataclass
+class RewardConfig:
+    """Configuration for the environment's reward function.
+
+    Attributes:
+        mode: ``"dense"`` emits a reward on every placement step
+            (``-wait_penalty_weight * waiting_time`` minus an optional
+            backlog penalty). ``"sparse"`` emits 0 on every step except
+            optionally at termination.
+        wait_penalty_weight: Multiplier on the placed job's waiting time
+            (dense mode only).
+        backlog_penalty_weight: Multiplier on ``len(wait_queue)`` added as a
+            per-step penalty in dense mode. Default 0 disables it.
+        completion_bonus: Reward added on the terminal step (both modes).
+    """
+
+    mode: Literal["dense", "sparse"] = "dense"
+    wait_penalty_weight: float = 1.0
+    backlog_penalty_weight: float = 0.0
+    completion_bonus: float = 0.0
 
 
 class ClusterSchedulingEnv(gym.Env):
@@ -32,11 +66,13 @@ class ClusterSchedulingEnv(gym.Env):
         self,
         sim_config: SimulatorConfig | None = None,
         workload_config: WorkloadConfig | None = None,
+        reward_config: RewardConfig | None = None,
         seed: int | None = None,
     ):
         super().__init__()
         self.sim_config = sim_config or SimulatorConfig()
         self.workload_config = workload_config or WorkloadConfig()
+        self.reward_config = reward_config or RewardConfig()
         self.seed_value = seed
 
         num_machines = self.sim_config.num_machines
@@ -83,7 +119,7 @@ class ClusterSchedulingEnv(gym.Env):
         if self.current_job is not None:
             obs.append(self.current_job.cpu / self.sim_config.cpu_per_machine)
             obs.append(self.current_job.memory / self.sim_config.memory_per_machine)
-            obs.append(self.current_job.duration / self.workload_config.duration_range[1])
+            obs.append(self.current_job.duration / DURATION_REF)
         else:
             obs.extend([0.0, 0.0, 0.0])
 
@@ -94,7 +130,7 @@ class ClusterSchedulingEnv(gym.Env):
         total_cpu = sum(m.cpu_utilization for m in self.machines)
         obs.append(total_cpu / len(self.machines) if self.machines else 0.0)
 
-        return np.array(obs, dtype=np.float32)
+        return np.clip(np.array(obs, dtype=np.float32), 0.0, 1.0)
 
     def _get_action_mask(self) -> np.ndarray:
         """Return a boolean mask of valid actions (machines that can fit the current job)."""
@@ -219,12 +255,11 @@ class ClusterSchedulingEnv(gym.Env):
         waiting_time = self.current_time - self.current_job.arrival_time
         machine.place_job(self.current_job, self.current_time)
 
-        # Reward: negative waiting time (0 is best, more negative = worse)
-        reward = -waiting_time
-
         # Advance to next decision point
         has_next = self._advance_to_next_decision()
         terminated = not has_next
+
+        reward = self._compute_reward(waiting_time=waiting_time, terminated=terminated)
 
         return (
             self._get_obs(),
@@ -233,3 +268,21 @@ class ClusterSchedulingEnv(gym.Env):
             False,
             {"action_mask": self._get_action_mask()},
         )
+
+    def _compute_reward(self, waiting_time: float, terminated: bool) -> float:
+        """Compute the step reward from ``self.reward_config``.
+
+        Dense mode returns ``-wait_penalty_weight * waiting_time`` minus an
+        optional per-step backlog penalty. Sparse mode returns 0 on non-terminal
+        steps. Both modes add ``completion_bonus`` on the terminal step.
+        """
+        cfg = self.reward_config
+        if cfg.mode == "sparse":
+            reward = 0.0
+        else:
+            reward = -cfg.wait_penalty_weight * waiting_time
+            if cfg.backlog_penalty_weight:
+                reward -= cfg.backlog_penalty_weight * len(self.wait_queue)
+        if terminated and cfg.completion_bonus:
+            reward += cfg.completion_bonus
+        return float(reward)

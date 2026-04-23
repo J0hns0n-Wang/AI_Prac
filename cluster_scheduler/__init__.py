@@ -1,6 +1,7 @@
 """Cluster scheduling simulator, heuristic baselines, and RL environment."""
 
 from cluster_scheduler.benchmark import BenchmarkResult, run_benchmark
+from cluster_scheduler.env import ClusterSchedulingEnv, RewardConfig
 from cluster_scheduler.metrics import SchedulerMetrics, compute_metrics
 from cluster_scheduler.models import Job, Machine
 from cluster_scheduler.scheduler import (
@@ -16,10 +17,12 @@ from cluster_scheduler.workload import WorkloadConfig, WorkloadGenerator
 __all__ = [
     "BenchmarkResult",
     "BestFitScheduler",
+    "ClusterSchedulingEnv",
     "FirstFitScheduler",
     "Job",
     "Machine",
     "RandomScheduler",
+    "RewardConfig",
     "Scheduler",
     "SchedulerMetrics",
     "ShortestJobFirstScheduler",
