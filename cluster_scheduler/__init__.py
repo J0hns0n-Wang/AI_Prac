@@ -6,6 +6,11 @@ from cluster_scheduler.evaluation import RegimeSpec, default_regimes, summarize,
 from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer, RichFeaturizer
 from cluster_scheduler.metrics import SchedulerMetrics, compute_metrics, mean_ci
 from cluster_scheduler.models import Job, Machine
+from cluster_scheduler.report import (
+    plot_arrival_sweep,
+    plot_regime_bars,
+    write_results_csv,
+)
 from cluster_scheduler.scheduler import (
     BestFitScheduler,
     FirstFitScheduler,
@@ -41,7 +46,10 @@ __all__ = [
     "compute_metrics",
     "default_regimes",
     "mean_ci",
+    "plot_arrival_sweep",
+    "plot_regime_bars",
     "run_benchmark",
     "summarize",
     "sweep",
+    "write_results_csv",
 ]
