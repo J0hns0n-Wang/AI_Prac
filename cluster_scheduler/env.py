@@ -7,6 +7,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer
 from cluster_scheduler.models import Job, Machine
 from cluster_scheduler.simulator import SimulatorConfig
 from cluster_scheduler.workload import WorkloadConfig, WorkloadGenerator
@@ -79,20 +80,23 @@ class ClusterSchedulingEnv(gym.Env):
         sim_config: SimulatorConfig | None = None,
         workload_config: WorkloadConfig | None = None,
         reward_config: RewardConfig | None = None,
+        featurizer: Featurizer | None = None,
         seed: int | None = None,
     ):
         super().__init__()
         self.sim_config = sim_config or SimulatorConfig()
         self.workload_config = workload_config or WorkloadConfig()
         self.reward_config = reward_config or RewardConfig()
+        self.featurizer = featurizer or BasicFeaturizer(duration_ref=DURATION_REF)
         self.seed_value = seed
 
         num_machines = self.sim_config.num_machines
 
-        # Observation: per-machine (cpu_util, mem_util) + job (cpu, mem, dur) + system (queue_len, cluster_util)
-        obs_size = num_machines * 2 + 3 + 2
+        # Observation space is driven by the featurizer so ablations can
+        # swap layouts without editing the env.
+        obs_shape = self.featurizer.observation_shape(self.sim_config)
         self.observation_space = spaces.Box(
-            low=0.0, high=1.0, shape=(obs_size,), dtype=np.float32
+            low=0.0, high=1.0, shape=obs_shape, dtype=np.float32
         )
 
         # Action: pick a machine
@@ -119,30 +123,15 @@ class ClusterSchedulingEnv(gym.Env):
         ]
 
     def _get_obs(self) -> np.ndarray:
-        """Build the observation vector."""
-        obs = []
-
-        # Per-machine utilization
-        for m in self.machines:
-            obs.append(m.cpu_utilization)
-            obs.append(m.memory_utilization)
-
-        # Current job features (normalized by machine capacity)
-        if self.current_job is not None:
-            obs.append(self.current_job.cpu / self.sim_config.cpu_per_machine)
-            obs.append(self.current_job.memory / self.sim_config.memory_per_machine)
-            obs.append(self.current_job.duration / DURATION_REF)
-        else:
-            obs.extend([0.0, 0.0, 0.0])
-
-        # System stats
-        max_queue = self.workload_config.num_jobs
-        obs.append(len(self.wait_queue) / max_queue if max_queue > 0 else 0.0)
-
-        total_cpu = sum(m.cpu_utilization for m in self.machines)
-        obs.append(total_cpu / len(self.machines) if self.machines else 0.0)
-
-        return np.clip(np.array(obs, dtype=np.float32), 0.0, 1.0)
+        """Build the observation vector via the configured featurizer, clipped to [0, 1]."""
+        obs = self.featurizer.featurize(
+            machines=self.machines,
+            current_job=self.current_job,
+            wait_queue=self.wait_queue,
+            sim_config=self.sim_config,
+            queue_capacity=self.workload_config.num_jobs,
+        )
+        return np.clip(obs, 0.0, 1.0)
 
     def _get_action_mask(self) -> np.ndarray:
         """Return a boolean mask of valid actions (machines that can fit the current job)."""

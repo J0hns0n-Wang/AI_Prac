@@ -2,6 +2,7 @@
 
 from cluster_scheduler.benchmark import BenchmarkResult, run_benchmark
 from cluster_scheduler.env import ClusterSchedulingEnv, RewardConfig
+from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer, RichFeaturizer
 from cluster_scheduler.metrics import SchedulerMetrics, compute_metrics
 from cluster_scheduler.models import Job, Machine
 from cluster_scheduler.scheduler import (
@@ -15,14 +16,17 @@ from cluster_scheduler.simulator import Simulator, SimulatorConfig
 from cluster_scheduler.workload import WorkloadConfig, WorkloadGenerator
 
 __all__ = [
+    "BasicFeaturizer",
     "BenchmarkResult",
     "BestFitScheduler",
     "ClusterSchedulingEnv",
+    "Featurizer",
     "FirstFitScheduler",
     "Job",
     "Machine",
     "RandomScheduler",
     "RewardConfig",
+    "RichFeaturizer",
     "Scheduler",
     "SchedulerMetrics",
     "ShortestJobFirstScheduler",
