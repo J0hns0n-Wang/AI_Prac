@@ -141,6 +141,61 @@ def plot_regime_bars(
     return out
 
 
+def plot_ablation_heatmap(
+    df: pd.DataFrame,
+    metric: str,
+    out_path: Path | str,
+    row: str = "reward",
+    col: str = "featurizer",
+    title: str | None = None,
+    aggfunc: str = "mean",
+) -> Path:
+    """Heatmap of ``metric`` aggregated over ``row × col``.
+
+    Intended for the ablation runner: ``row`` is typically the reward
+    variant and ``col`` is the featurizer, with cell values aggregated
+    across train/eval seeds and regimes.
+
+    Args:
+        df: Tidy DataFrame including ``row``, ``col``, and ``metric``.
+        metric: Column to aggregate.
+        out_path: PNG destination.
+        row: Column used for heatmap rows.
+        col: Column used for heatmap columns.
+        title: Optional title.
+        aggfunc: Pandas aggregation function name.
+    """
+    _require_columns(df, {row, col, metric})
+    pivot = df.pivot_table(index=row, columns=col, values=metric, aggfunc=aggfunc)
+    if pivot.empty:
+        raise ValueError("Pivot table is empty; check that row/col values are present in df")
+
+    fig, ax = plt.subplots(figsize=(1.6 * len(pivot.columns) + 2, 1.0 * len(pivot.index) + 2))
+    im = ax.imshow(pivot.values, cmap="viridis", aspect="auto")
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels([str(c) for c in pivot.columns], rotation=20, ha="right")
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels([str(r) for r in pivot.index])
+
+    for i in range(pivot.shape[0]):
+        for j in range(pivot.shape[1]):
+            v = pivot.values[i, j]
+            if pd.notna(v):
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", color="white", fontsize=9)
+
+    fig.colorbar(im, ax=ax, label=metric)
+    ax.set_xlabel(col)
+    ax.set_ylabel(row)
+    ax.set_title(title or f"{aggfunc}({metric}) — {row} × {col}")
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
 def _require_columns(df: pd.DataFrame, cols: set[str]) -> None:
     missing = cols - set(df.columns)
     if missing:
