@@ -9,6 +9,7 @@ from cluster_scheduler.scheduler import (
     BestFitScheduler,
     FirstFitScheduler,
     RandomScheduler,
+    RLScheduler,
     Scheduler,
     ShortestJobFirstScheduler,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "FirstFitScheduler",
     "Job",
     "Machine",
+    "RLScheduler",
     "RandomScheduler",
     "RewardConfig",
     "RichFeaturizer",
