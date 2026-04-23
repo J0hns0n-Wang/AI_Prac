@@ -28,6 +28,7 @@ htmlcov/
 .ipynb_checkpoints/
 
 # ML / RL artifacts
+artifacts/
 logs/
 runs/
 tb_logs/

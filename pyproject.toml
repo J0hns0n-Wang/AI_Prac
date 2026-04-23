@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cluster_scheduler"
+version = "0.1.0"
+description = "Learning generalizable cluster resource scheduling policies via reinforcement learning."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Frank Dai" },
+    { name = "Johnson Wang" },
+    { name = "Jerry Ji" },
+]
+dependencies = [
+    "numpy>=1.24",
+    "gymnasium>=0.29,<1.1",
+    "stable-baselines3>=2.3,<3.0",
+    "sb3-contrib>=2.3,<3.0",
+    "torch>=2.1",
+    "matplotlib>=3.7",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["cluster_scheduler*"]
+exclude = ["tests*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: long-running tests (e.g., PPO smoke training). Run with '-m slow'.",
+]
