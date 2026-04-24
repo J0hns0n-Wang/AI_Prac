@@ -120,6 +120,38 @@ class TestTraining:
         assert meta["reward_config"]["backlog_penalty_weight"] == 0.1
         assert meta["ppo_kwargs"]["n_steps"] == 64
 
+    def test_n_envs_and_policy_kwargs_roundtrip(self, tmp_path: Path):
+        """--n-envs > 1 + custom MLP arch both take effect and persist in the sidecar."""
+        import json
+
+        from cluster_scheduler.train import main as train_main
+
+        save_path = tmp_path / "ppo_big.zip"
+        train_main([
+            "--timesteps", "256",
+            "--seed", "0",
+            "--num-machines", "3",
+            "--num-jobs", "10",
+            "--arrival-rate", "2.0",
+            "--n-envs", "2",
+            "--device", "cpu",
+            "--policy-hidden", "32", "32",
+            "--activation", "gelu",
+            "--n-steps", "64",
+            "--batch-size", "32",
+            "--n-epochs", "1",
+            "--log-dir", str(tmp_path / "runs"),
+            "--save-path", str(save_path),
+        ])
+        sidecar = tmp_path / "ppo_big.zip.meta.json"
+        assert save_path.exists()
+        assert sidecar.exists()
+        meta = json.loads(sidecar.read_text())
+        assert meta["n_envs"] == 2
+        assert meta["device"] == "cpu"
+        assert meta["policy_kwargs"]["net_arch"] == [32, 32]
+        assert meta["policy_kwargs"]["activation_fn"] == "gelu"
+
     def test_checkpoints_written(self, tmp_path: Path):
         save_path = tmp_path / "ppo.zip"
         train_maskable_ppo(
