@@ -122,6 +122,8 @@ def train_maskable_ppo(
     normalize_reward: bool = False,
     reward_clip: float = 10.0,
     resume_from: str | Path | None = None,
+    progress_bar: bool = False,
+    verbose: int = 0,
 ) -> MaskablePPO:
     """Train a MaskablePPO policy on the given env factory.
 
@@ -192,7 +194,7 @@ def train_maskable_ppo(
         env=vec_env,
         seed=seed,
         tensorboard_log=str(log_path) if (log_path and _HAS_TENSORBOARD) else None,
-        verbose=0,
+        verbose=verbose,
         device=device,
     )
     if policy_kwargs:
@@ -238,7 +240,11 @@ def train_maskable_ppo(
             )
         )
 
-    model.learn(total_timesteps=total_timesteps, callback=callbacks or None)
+    model.learn(
+        total_timesteps=total_timesteps,
+        callback=callbacks or None,
+        progress_bar=progress_bar,
+    )
 
     if save_path is not None:
         out = Path(save_path)
@@ -409,10 +415,17 @@ def _build_argparser() -> argparse.ArgumentParser:
                         "Omit for SB3 default ([64, 64]).")
     p.add_argument("--activation", choices=sorted(_ACTIVATION_BY_NAME), default=None,
                    help="Activation for the policy MLP. Omit for SB3 default (tanh).")
-    # IO
+    # IO + progress
     p.add_argument("--log-dir", type=str, default="runs/ppo_run")
     p.add_argument("--save-path", type=str, default="artifacts/ppo.zip")
     p.add_argument("--checkpoint-freq", type=int, default=0)
+    p.add_argument("--progress", action="store_true",
+                   help="Show a tqdm/rich progress bar during training "
+                        "(requires 'tqdm' and 'rich' to be installed; both come "
+                        "with stable-baselines3 extras).")
+    p.add_argument("--verbose", type=int, default=0,
+                   help="SB3 verbosity (0 silent, 1 info, 2 debug). With --progress, "
+                        "set 1 to also see per-update stats like fps and ep_rew_mean.")
     return p
 
 
@@ -490,6 +503,8 @@ def main(argv: list[str] | None = None) -> None:
         normalize_reward=args.normalize_reward,
         reward_clip=args.reward_clip,
         resume_from=args.resume_from,
+        progress_bar=args.progress,
+        verbose=args.verbose,
     )
 
     if args.save_path:
