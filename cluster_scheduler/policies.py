@@ -102,6 +102,16 @@ class SetAttentionExtractor(BaseFeaturesExtractor):
         )
         self.norms = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(n_layers)])
 
+        # SB3-style init for the linear projections. sqrt(2) gain is the
+        # usual "he" choice for ReLU/GELU hidden layers; MultiheadAttention
+        # ships with sensible defaults, so leave those alone.
+        from math import sqrt
+        for m in list(self.machine_embed.modules()) + [self.job_embed]:
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=sqrt(2.0))
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         mxd = self.max_machines * self.d_m
         batch = obs.shape[0]
@@ -137,6 +147,15 @@ class SetAttentionExtractor(BaseFeaturesExtractor):
         return torch.cat([flat, is_active], dim=-1)
 
 
+def _orthogonal_init(module: nn.Module, gain: float) -> None:
+    """SB3-style init: orthogonal weights with the given gain, zero biases."""
+    for layer in module.modules():
+        if isinstance(layer, nn.Linear):
+            nn.init.orthogonal_(layer.weight, gain=gain)
+            if layer.bias is not None:
+                nn.init.zeros_(layer.bias)
+
+
 class _SetActorHead(nn.Module):
     """Shared linear score applied per machine to produce MAX action logits."""
 
@@ -145,6 +164,11 @@ class _SetActorHead(nn.Module):
         self.max_machines = int(max_machines)
         self.embed_dim = int(embed_dim)
         self.score = nn.Linear(embed_dim, 1)
+        # SB3's MlpPolicy default: small-gain orthogonal init on the action
+        # net so initial logits are tiny and the policy starts near-uniform.
+        # Default Linear init has gain ~1 which produces peaked softmax at
+        # startup and causes immediate actor collapse under PPO clipping.
+        _orthogonal_init(self, gain=0.01)
 
     def forward(self, latent_pi: torch.Tensor) -> torch.Tensor:
         total = self.max_machines * self.embed_dim
@@ -164,6 +188,8 @@ class _SetValueHead(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, 1),
         )
+        # SB3 default for the value net: orthogonal with gain=1.
+        _orthogonal_init(self, gain=1.0)
 
     def forward(self, latent_vf: torch.Tensor) -> torch.Tensor:
         total = self.max_machines * self.embed_dim
