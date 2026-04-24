@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
@@ -37,7 +39,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from cluster_scheduler.env import ClusterSchedulingEnv, RewardConfig
-from cluster_scheduler.featurizers import Featurizer
+from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer, RichFeaturizer
 from cluster_scheduler.simulator import SimulatorConfig
 from cluster_scheduler.workload import WorkloadConfig
 
@@ -158,33 +160,136 @@ def train_maskable_ppo(
     return model
 
 
+def describe_featurizer(featurizer: Featurizer) -> dict[str, Any]:
+    """JSON-serializable description of a featurizer for sidecar metadata."""
+    if isinstance(featurizer, RichFeaturizer):
+        return {"name": "rich", "top_k": featurizer.top_k, "duration_ref": featurizer.duration_ref}
+    if isinstance(featurizer, BasicFeaturizer):
+        return {"name": "basic", "duration_ref": featurizer.duration_ref}
+    return {"name": featurizer.__class__.__name__}
+
+
+def build_featurizer(spec: dict[str, Any]) -> Featurizer:
+    """Inverse of :func:`describe_featurizer`. Accepts a dict from a sidecar."""
+    name = spec.get("name", "basic")
+    if name == "rich":
+        return RichFeaturizer(
+            top_k=int(spec.get("top_k", 4)),
+            duration_ref=float(spec.get("duration_ref", 100.0)),
+        )
+    if name == "basic":
+        return BasicFeaturizer(duration_ref=float(spec.get("duration_ref", 100.0)))
+    raise ValueError(f"Unknown featurizer name: {name!r}")
+
+
+def write_model_sidecar(
+    save_path: str | Path,
+    *,
+    sim_config: SimulatorConfig,
+    workload_config: WorkloadConfig,
+    reward_config: RewardConfig,
+    featurizer: Featurizer,
+    timesteps: int,
+    seed: int,
+    ppo_kwargs: dict[str, Any] | None = None,
+) -> Path:
+    """Write a small JSON describing how ``save_path`` was trained.
+
+    Downstream tools (e.g. ``scripts/run_experiments.py``) read this to
+    reconstruct the exact featurizer and queue normalization used at
+    training time, so eval observations match training observations.
+    """
+    out = Path(save_path)
+    sidecar = out.with_suffix(out.suffix + ".meta.json") if out.suffix else out.with_suffix(".meta.json")
+    payload = {
+        "featurizer": describe_featurizer(featurizer),
+        "num_machines": sim_config.num_machines,
+        "cpu_per_machine": sim_config.cpu_per_machine,
+        "memory_per_machine": sim_config.memory_per_machine,
+        "num_jobs": workload_config.num_jobs,
+        "arrival_rate": workload_config.arrival_rate,
+        "reward_config": asdict(reward_config),
+        "timesteps": int(timesteps),
+        "seed": int(seed),
+        "ppo_kwargs": ppo_kwargs or {},
+    }
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    return sidecar
+
+
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Train MaskablePPO on the cluster scheduling env.")
     p.add_argument("--timesteps", type=int, default=200_000)
     p.add_argument("--seed", type=int, default=0)
+    # Cluster shape
     p.add_argument("--num-machines", type=int, default=10)
     p.add_argument("--cpu-per-machine", type=float, default=8.0)
     p.add_argument("--memory-per-machine", type=float, default=16.0)
+    # Workload
     p.add_argument("--num-jobs", type=int, default=100)
     p.add_argument("--arrival-rate", type=float, default=2.0)
+    # Featurizer
+    p.add_argument("--featurizer", choices=["basic", "rich"], default="basic")
+    p.add_argument("--rich-top-k", type=int, default=4,
+                   help="top-k queued jobs exposed by RichFeaturizer (ignored for basic).")
+    # Reward shaping
+    p.add_argument("--reward-mode", choices=["dense", "sparse"], default="dense")
+    p.add_argument("--wait-penalty-weight", type=float, default=1.0)
+    p.add_argument("--backlog-penalty-weight", type=float, default=0.0)
+    p.add_argument("--completion-bonus", type=float, default=0.0)
+    # PPO hyperparams (unset = SB3 default)
+    p.add_argument("--learning-rate", type=float, default=None)
+    p.add_argument("--n-steps", type=int, default=None)
+    p.add_argument("--batch-size", type=int, default=None)
+    p.add_argument("--n-epochs", type=int, default=None)
+    p.add_argument("--ent-coef", type=float, default=None)
+    p.add_argument("--gamma", type=float, default=None)
+    p.add_argument("--gae-lambda", type=float, default=None)
+    p.add_argument("--clip-range", type=float, default=None)
+    # IO
     p.add_argument("--log-dir", type=str, default="runs/ppo_run")
     p.add_argument("--save-path", type=str, default="artifacts/ppo.zip")
     p.add_argument("--checkpoint-freq", type=int, default=0)
     return p
 
 
+def _ppo_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    keys = ("learning_rate", "n_steps", "batch_size", "n_epochs",
+            "ent_coef", "gamma", "gae_lambda", "clip_range")
+    return {k: getattr(args, k) for k in keys if getattr(args, k) is not None}
+
+
 def main(argv: list[str] | None = None) -> None:
     args = _build_argparser().parse_args(argv)
+
+    sim_cfg = SimulatorConfig(
+        num_machines=args.num_machines,
+        cpu_per_machine=args.cpu_per_machine,
+        memory_per_machine=args.memory_per_machine,
+    )
+    workload_cfg = WorkloadConfig(
+        num_jobs=args.num_jobs,
+        arrival_rate=args.arrival_rate,
+    )
+    reward_cfg = RewardConfig(
+        mode=args.reward_mode,
+        wait_penalty_weight=args.wait_penalty_weight,
+        backlog_penalty_weight=args.backlog_penalty_weight,
+        completion_bonus=args.completion_bonus,
+    )
+    if args.featurizer == "rich":
+        featurizer: Featurizer = RichFeaturizer(top_k=args.rich_top_k)
+    else:
+        featurizer = BasicFeaturizer()
+
+    ppo_kwargs = _ppo_kwargs_from_args(args)
+
     factory = make_env(
-        sim_config=SimulatorConfig(
-            num_machines=args.num_machines,
-            cpu_per_machine=args.cpu_per_machine,
-            memory_per_machine=args.memory_per_machine,
-        ),
-        workload_config=WorkloadConfig(
-            num_jobs=args.num_jobs,
-            arrival_rate=args.arrival_rate,
-        ),
+        sim_config=sim_cfg,
+        workload_config=workload_cfg,
+        reward_config=reward_cfg,
+        featurizer=featurizer,
         seed=args.seed,
     )
     train_maskable_ppo(
@@ -194,7 +299,20 @@ def main(argv: list[str] | None = None) -> None:
         log_dir=args.log_dir,
         save_path=args.save_path,
         checkpoint_freq=args.checkpoint_freq,
+        ppo_kwargs=ppo_kwargs or None,
     )
+
+    if args.save_path:
+        write_model_sidecar(
+            args.save_path,
+            sim_config=sim_cfg,
+            workload_config=workload_cfg,
+            reward_config=reward_cfg,
+            featurizer=featurizer,
+            timesteps=args.timesteps,
+            seed=args.seed,
+            ppo_kwargs=ppo_kwargs,
+        )
 
 
 if __name__ == "__main__":

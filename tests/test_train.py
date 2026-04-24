@@ -87,6 +87,39 @@ class TestTraining:
         action_after, _ = loaded.predict(obs, action_masks=mask, deterministic=True)
         assert int(action_before) == int(action_after)
 
+    def test_sidecar_written_with_expected_fields(self, tmp_path: Path):
+        import json
+
+        from cluster_scheduler.train import main as train_main
+
+        save_path = tmp_path / "ppo.zip"
+        log_dir = tmp_path / "runs"
+        train_main([
+            "--timesteps", "128",
+            "--seed", "0",
+            "--num-machines", "3",
+            "--num-jobs", "10",
+            "--arrival-rate", "2.0",
+            "--featurizer", "rich",
+            "--rich-top-k", "2",
+            "--reward-mode", "dense",
+            "--backlog-penalty-weight", "0.1",
+            "--n-steps", "64",
+            "--batch-size", "32",
+            "--n-epochs", "1",
+            "--log-dir", str(log_dir),
+            "--save-path", str(save_path),
+        ])
+        sidecar = tmp_path / "ppo.zip.meta.json"
+        assert save_path.exists()
+        assert sidecar.exists()
+        meta = json.loads(sidecar.read_text())
+        assert meta["featurizer"] == {"name": "rich", "top_k": 2, "duration_ref": 100.0}
+        assert meta["num_machines"] == 3
+        assert meta["reward_config"]["mode"] == "dense"
+        assert meta["reward_config"]["backlog_penalty_weight"] == 0.1
+        assert meta["ppo_kwargs"]["n_steps"] == 64
+
     def test_checkpoints_written(self, tmp_path: Path):
         save_path = tmp_path / "ppo.zip"
         train_maskable_ppo(
