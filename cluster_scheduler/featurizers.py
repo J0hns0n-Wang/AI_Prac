@@ -186,3 +186,117 @@ class RichFeaturizer(Featurizer):
         return np.concatenate(
             [basic, np.array(queue_peek + backlog + headroom, dtype=np.float32)]
         ).astype(np.float32)
+
+
+# ── Set-attention featurizer ───────────────────────────────────
+
+#: Max machines the set-attention policy supports. Every SetFeaturizer
+#: observation is padded to this length. Picked to cover the widest
+#: default regime (``wide_cluster`` = 20) with headroom.
+MAX_MACHINES: int = 32
+
+#: Per-machine feature dimension used by SetFeaturizer: cpu_util, mem_util,
+#: cpu_free_norm, mem_free_norm, is_active, can_fit_current_job.
+_SET_D_M: int = 6
+
+#: Current-job feature dim: cpu_norm, mem_norm, duration_norm.
+_SET_D_J: int = 3
+
+#: Global feature dim: queue_len_norm, mean_cpu_util (over active machines).
+_SET_D_G: int = 2
+
+
+class SetFeaturizer(Featurizer):
+    """Permutation-invariant set-of-machines layout for attention policies.
+
+    The observation is a flat vector of length
+    ``MAX_MACHINES * 6 + 3 + 2`` (= 197 with default MAX_MACHINES=32),
+    laid out as:
+
+    - ``[MAX_MACHINES * 6]`` per-machine features, concatenated in id
+      order. Real machines have their features; padded slots have all
+      zeros, and the ``is_active`` bit (index 4 within the per-machine
+      block) distinguishes real from padding.
+    - ``[3]`` current-job features (``cpu/cpu_per_m``,
+      ``mem/mem_per_m``, ``duration/duration_ref``).
+    - ``[2]`` global features: ``queue_len / queue_capacity`` and the
+      mean ``cpu_utilization`` over *active* machines only.
+
+    A policy reading this obs reshapes the per-machine block to a
+    ``[MAX_MACHINES, 6]`` set, embeds each row with a shared MLP, runs
+    self-attention with ``is_active`` as the key-padding mask, and uses
+    a per-machine scoring head to produce ``MAX_MACHINES`` action logits.
+
+    Args:
+        duration_ref: Normalizer for duration features. Same semantics
+            as :class:`BasicFeaturizer`'s ``duration_ref``.
+    """
+
+    def __init__(self, duration_ref: float = 100.0):
+        self.duration_ref = float(duration_ref)
+
+    # Public constants re-exported here for the policy / env to read.
+    MAX_MACHINES: int = MAX_MACHINES
+    D_M: int = _SET_D_M
+    D_J: int = _SET_D_J
+    D_G: int = _SET_D_G
+
+    def observation_shape(self, sim_config: SimulatorConfig) -> tuple[int, ...]:
+        # Shape does NOT depend on sim_config.num_machines — that's the whole
+        # point. A single trained policy works on any num_machines <= MAX.
+        return (MAX_MACHINES * _SET_D_M + _SET_D_J + _SET_D_G,)
+
+    def featurize(
+        self,
+        machines: Sequence[Machine],
+        current_job: Optional[Job],
+        wait_queue: Sequence[Job],
+        sim_config: SimulatorConfig,
+        queue_capacity: int,
+    ) -> np.ndarray:
+        n_real = len(machines)
+        if n_real > MAX_MACHINES:
+            raise ValueError(
+                f"SetFeaturizer supports at most MAX_MACHINES={MAX_MACHINES} "
+                f"machines, got {n_real}."
+            )
+
+        cpu_cap = sim_config.cpu_per_machine
+        mem_cap = sim_config.memory_per_machine
+
+        machine_block = np.zeros((MAX_MACHINES, _SET_D_M), dtype=np.float32)
+        for i, m in enumerate(machines):
+            can_fit = (
+                1.0 if (current_job is not None and m.can_fit(current_job)) else 0.0
+            )
+            machine_block[i, 0] = m.cpu_utilization
+            machine_block[i, 1] = m.memory_utilization
+            machine_block[i, 2] = (m.cpu_free / cpu_cap) if cpu_cap > 0 else 0.0
+            machine_block[i, 3] = (m.memory_free / mem_cap) if mem_cap > 0 else 0.0
+            machine_block[i, 4] = 1.0  # is_active
+            machine_block[i, 5] = can_fit
+
+        if current_job is not None:
+            job_vec = np.array(
+                [
+                    current_job.cpu / cpu_cap if cpu_cap > 0 else 0.0,
+                    current_job.memory / mem_cap if mem_cap > 0 else 0.0,
+                    current_job.duration / self.duration_ref,
+                ],
+                dtype=np.float32,
+            )
+        else:
+            job_vec = np.zeros(_SET_D_J, dtype=np.float32)
+
+        queue_len_norm = (
+            len(wait_queue) / queue_capacity if queue_capacity > 0 else 0.0
+        )
+        if n_real > 0:
+            mean_cpu_util = float(np.mean([m.cpu_utilization for m in machines]))
+        else:
+            mean_cpu_util = 0.0
+        global_vec = np.array([queue_len_norm, mean_cpu_util], dtype=np.float32)
+
+        return np.concatenate(
+            [machine_block.reshape(-1), job_vec, global_vec]
+        ).astype(np.float32)

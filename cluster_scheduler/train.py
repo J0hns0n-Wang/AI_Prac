@@ -49,7 +49,12 @@ except ImportError:  # older SB3
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 from cluster_scheduler.env import ClusterSchedulingEnv, RewardConfig
-from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer, RichFeaturizer
+from cluster_scheduler.featurizers import (
+    BasicFeaturizer,
+    Featurizer,
+    RichFeaturizer,
+    SetFeaturizer,
+)
 from cluster_scheduler.simulator import SimulatorConfig
 from cluster_scheduler.workload import WorkloadConfig
 
@@ -178,6 +183,7 @@ def train_maskable_ppo(
     progress_bar: bool = False,
     verbose: int = 0,
     heartbeat_every: int = 0,
+    policy_class: Any = None,
 ) -> MaskablePPO:
     """Train a MaskablePPO policy on the given env factory.
 
@@ -244,7 +250,7 @@ def train_maskable_ppo(
         )
 
     kwargs: dict[str, Any] = dict(
-        policy="MlpPolicy",
+        policy=policy_class if policy_class is not None else "MlpPolicy",
         env=vec_env,
         seed=seed,
         tensorboard_log=str(log_path) if (log_path and _HAS_TENSORBOARD) else None,
@@ -335,6 +341,8 @@ def describe_featurizer(featurizer: Featurizer) -> dict[str, Any]:
     """JSON-serializable description of a featurizer for sidecar metadata."""
     if isinstance(featurizer, RichFeaturizer):
         return {"name": "rich", "top_k": featurizer.top_k, "duration_ref": featurizer.duration_ref}
+    if isinstance(featurizer, SetFeaturizer):
+        return {"name": "set", "duration_ref": featurizer.duration_ref}
     if isinstance(featurizer, BasicFeaturizer):
         return {"name": "basic", "duration_ref": featurizer.duration_ref}
     return {"name": featurizer.__class__.__name__}
@@ -348,6 +356,8 @@ def build_featurizer(spec: dict[str, Any]) -> Featurizer:
             top_k=int(spec.get("top_k", 4)),
             duration_ref=float(spec.get("duration_ref", 100.0)),
         )
+    if name == "set":
+        return SetFeaturizer(duration_ref=float(spec.get("duration_ref", 100.0)))
     if name == "basic":
         return BasicFeaturizer(duration_ref=float(spec.get("duration_ref", 100.0)))
     raise ValueError(f"Unknown featurizer name: {name!r}")
@@ -445,9 +455,15 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--num-jobs", type=int, default=100)
     p.add_argument("--arrival-rate", type=float, default=2.0)
     # Featurizer
-    p.add_argument("--featurizer", choices=["basic", "rich"], default="basic")
+    p.add_argument("--featurizer", choices=["basic", "rich", "set"], default="basic",
+                   help="'set' is auto-selected and required when --policy set_attention.")
     p.add_argument("--rich-top-k", type=int, default=4,
-                   help="top-k queued jobs exposed by RichFeaturizer (ignored for basic).")
+                   help="top-k queued jobs exposed by RichFeaturizer (ignored for basic/set).")
+    # Policy architecture
+    p.add_argument("--policy", choices=["mlp", "set_attention"], default="mlp",
+                   help="'mlp' is SB3's default MlpPolicy with --policy-hidden/--activation. "
+                        "'set_attention' uses SetAttentionExtractor + per-machine scoring head "
+                        "and forces --featurizer set (for cross-cluster generalization).")
     # Reward shaping
     p.add_argument("--reward-mode", choices=["dense", "sparse"], default="dense")
     p.add_argument("--wait-penalty-weight", type=float, default=1.0)
@@ -543,18 +559,45 @@ def main(argv: list[str] | None = None) -> None:
         backlog_penalty_weight=args.backlog_penalty_weight,
         completion_bonus=args.completion_bonus,
     )
+    # --policy set_attention forces --featurizer set; --policy-hidden and
+    # --activation don't apply (the set-attention policy has its own heads).
+    if args.policy == "set_attention":
+        if args.featurizer != "set":
+            if args.featurizer != "basic":
+                print(
+                    f"[train] --policy set_attention requires --featurizer set "
+                    f"(got {args.featurizer!r}); overriding.",
+                    flush=True,
+                )
+            args.featurizer = "set"
+
     if args.featurizer == "rich":
         featurizer: Featurizer = RichFeaturizer(top_k=args.rich_top_k)
+    elif args.featurizer == "set":
+        featurizer = SetFeaturizer()
     else:
         featurizer = BasicFeaturizer()
 
     ppo_kwargs = _ppo_kwargs_from_args(args)
 
     policy_kwargs: dict[str, Any] = {}
-    if args.policy_hidden:
-        policy_kwargs["net_arch"] = list(args.policy_hidden)
-    if args.activation:
-        policy_kwargs["activation_fn"] = _ACTIVATION_BY_NAME[args.activation]
+    policy_class: Any = None
+    if args.policy == "set_attention":
+        # Import lazily so users without torch >= 2.0 / recent sb3-contrib
+        # still get the default mlp path.
+        from cluster_scheduler.policies import SetMaskablePolicy
+        policy_class = SetMaskablePolicy
+        if args.policy_hidden or args.activation:
+            print(
+                "[train] --policy-hidden / --activation are ignored when "
+                "--policy set_attention (custom heads).",
+                flush=True,
+            )
+    else:
+        if args.policy_hidden:
+            policy_kwargs["net_arch"] = list(args.policy_hidden)
+        if args.activation:
+            policy_kwargs["activation_fn"] = _ACTIVATION_BY_NAME[args.activation]
 
     # Factory used when n_envs==1; for parallel training we build one
     # factory per worker so each has its own seed.
@@ -592,6 +635,7 @@ def main(argv: list[str] | None = None) -> None:
         progress_bar=args.progress,
         verbose=args.verbose,
         heartbeat_every=args.heartbeat_every,
+        policy_class=policy_class,
     )
     print(f"[train] done. model saved to {args.save_path}", flush=True)
 
@@ -613,6 +657,7 @@ def main(argv: list[str] | None = None) -> None:
                 "reward_clip": float(args.reward_clip),
                 "lr_schedule": args.lr_schedule,
                 "resume_from": args.resume_from,
+                "policy": args.policy,
             },
         )
 

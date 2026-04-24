@@ -3,7 +3,12 @@
 from cluster_scheduler.benchmark import BenchmarkResult, run_benchmark
 from cluster_scheduler.env import ClusterSchedulingEnv, RewardConfig
 from cluster_scheduler.evaluation import RegimeSpec, default_regimes, summarize, sweep
-from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer, RichFeaturizer
+from cluster_scheduler.featurizers import (
+    BasicFeaturizer,
+    Featurizer,
+    RichFeaturizer,
+    SetFeaturizer,
+)
 from cluster_scheduler.metrics import SchedulerMetrics, compute_metrics, mean_ci
 from cluster_scheduler.models import Job, Machine
 from cluster_scheduler.report import (
@@ -36,6 +41,7 @@ __all__ = [
     "RegimeSpec",
     "RewardConfig",
     "RichFeaturizer",
+    "SetFeaturizer",
     "Scheduler",
     "SchedulerMetrics",
     "ShortestJobFirstScheduler",

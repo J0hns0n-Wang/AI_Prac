@@ -7,7 +7,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer
+from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer, SetFeaturizer
 from cluster_scheduler.models import Job, Machine
 from cluster_scheduler.simulator import SimulatorConfig
 from cluster_scheduler.workload import WorkloadConfig, WorkloadGenerator
@@ -99,8 +99,19 @@ class ClusterSchedulingEnv(gym.Env):
             low=0.0, high=1.0, shape=obs_shape, dtype=np.float32
         )
 
-        # Action: pick a machine
-        self.action_space = spaces.Discrete(num_machines)
+        # Action space: normally Discrete(num_machines). SetFeaturizer pads
+        # observations to MAX_MACHINES so a single trained policy can run on
+        # any num_machines <= MAX; action_space must follow suit and unused
+        # slots are masked off by action_masks().
+        if isinstance(self.featurizer, SetFeaturizer):
+            if num_machines > SetFeaturizer.MAX_MACHINES:
+                raise ValueError(
+                    f"SetFeaturizer supports at most MAX_MACHINES="
+                    f"{SetFeaturizer.MAX_MACHINES} machines, got {num_machines}."
+                )
+            self.action_space = spaces.Discrete(SetFeaturizer.MAX_MACHINES)
+        else:
+            self.action_space = spaces.Discrete(num_machines)
 
         # Internal state
         self.machines: list[Machine] = []
@@ -134,10 +145,17 @@ class ClusterSchedulingEnv(gym.Env):
         return np.clip(obs, 0.0, 1.0)
 
     def _get_action_mask(self) -> np.ndarray:
-        """Return a boolean mask of valid actions (machines that can fit the current job)."""
-        mask = np.zeros(self.sim_config.num_machines, dtype=bool)
+        """Return a boolean mask of valid actions (machines that can fit the current job).
+
+        Length matches ``action_space.n``. For SetFeaturizer that's
+        ``MAX_MACHINES``; slots beyond the real cluster are always False.
+        """
+        mask_len = int(self.action_space.n)
+        mask = np.zeros(mask_len, dtype=bool)
         if self.current_job is not None:
             for i, m in enumerate(self.machines):
+                if i >= mask_len:
+                    break
                 mask[i] = m.can_fit(self.current_job)
         return mask
 
