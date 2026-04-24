@@ -59,19 +59,37 @@ the policy network size — a `[256, 256, 128]` MLP is microscopic for an A100.
 python -m cluster_scheduler.train \
     --timesteps 8000000 \
     --n-envs 32 --device cuda \
-    --policy-hidden 256 256 128 --activation gelu \
-    --num-machines 10 --num-jobs 300 --arrival-rate 8.0 \
+    --policy-hidden 256 256 --activation gelu \
+    --num-machines 10 --num-jobs 500 --arrival-rate 8.0 \
     --featurizer rich --rich-top-k 4 \
-    --reward-mode dense --backlog-penalty-weight 0.05 \
-    --n-steps 512 --batch-size 4096 \
-    --learning-rate 2.5e-4 --ent-coef 0.01 \
-    --gamma 0.995 --gae-lambda 0.95 \
+    --reward-mode dense --backlog-penalty-weight 0.1 --completion-bonus 1.0 \
+    --normalize-reward \
+    --n-steps 1024 --batch-size 4096 \
+    --learning-rate 2.5e-4 --lr-schedule linear \
+    --ent-coef 0.005 --clip-range-vf 0.2 \
+    --gamma 0.999 --gae-lambda 0.95 \
     --save-path artifacts/ppo_m10_big.zip \
     --log-dir runs/ppo_m10_big
 ```
 
-`n_steps=512 × n_envs=32` = 16384 rollout samples per update;
-`batch_size=4096` gives 4 minibatches per epoch. Each command also writes
-`<save_path>.meta.json` recording the featurizer, reward config, and
-network architecture used, so `scripts/run_experiments.py` reconstructs
-the right evaluation setup automatically.
+Additional stability / continuation knobs:
+
+- `--normalize-reward` wraps the vec env in `VecNormalize` (reward only).
+  The critic's target scale stays stable even when different regimes
+  produce very different reward magnitudes. Running stats are saved as
+  `<save_path>.vecnormalize.pkl` next to the `.zip`.
+- `--lr-schedule linear` decays `--learning-rate` to zero over training
+  (SB3's `get_linear_fn`). Works well in the last third of a long run.
+- `--clip-range-vf 0.2` clips the value-function loss, stabilizing the
+  critic — especially useful when `--normalize-reward` is on and the
+  reward scale drifts early in training.
+- `--resume-from artifacts/ppo_m10_big.zip` warm-starts from an existing
+  checkpoint. Hyperparameter flags on the fine-tuning invocation
+  override the checkpoint's originals, so a common recipe is: train
+  once with constant LR, then fine-tune with `--lr-schedule linear
+  --learning-rate 5e-5`.
+
+Each command writes `<save_path>.meta.json` recording featurizer, reward
+config, network architecture, and the new stability flags, so
+`scripts/run_experiments.py` reconstructs the right evaluation setup
+automatically.

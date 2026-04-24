@@ -37,7 +37,15 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+try:
+    from stable_baselines3.common.utils import LinearSchedule as _LinearSchedule
+    def _linear_schedule(start: float) -> Any:
+        return _LinearSchedule(start=start, end=0.0, end_fraction=1.0)
+except ImportError:  # older SB3
+    from stable_baselines3.common.utils import get_linear_fn as _get_linear_fn
+    def _linear_schedule(start: float) -> Any:
+        return _get_linear_fn(start=start, end=0.0, end_fraction=1.0)
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 from cluster_scheduler.env import ClusterSchedulingEnv, RewardConfig
 from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer, RichFeaturizer
@@ -111,6 +119,9 @@ def train_maskable_ppo(
     env_factory_builder: Callable[[int], EnvFactory] | None = None,
     device: str = "auto",
     policy_kwargs: dict[str, Any] | None = None,
+    normalize_reward: bool = False,
+    reward_clip: float = 10.0,
+    resume_from: str | Path | None = None,
 ) -> MaskablePPO:
     """Train a MaskablePPO policy on the given env factory.
 
@@ -163,6 +174,19 @@ def train_maskable_ppo(
         # on Linux but chokes on re-imports; spawn is the robust default.
         vec_env = SubprocVecEnv(factories, start_method="spawn")
 
+    if normalize_reward:
+        # Obs is already in [0, 1] via the featurizer, so only reward
+        # normalization is useful here. It keeps the critic's target scale
+        # stable across workloads, which matters when different regimes
+        # have very different reward magnitudes.
+        vec_env = VecNormalize(
+            vec_env,
+            norm_obs=False,
+            norm_reward=True,
+            clip_reward=reward_clip,
+            gamma=(ppo_kwargs or {}).get("gamma", 0.99),
+        )
+
     kwargs: dict[str, Any] = dict(
         policy="MlpPolicy",
         env=vec_env,
@@ -176,7 +200,31 @@ def train_maskable_ppo(
     if ppo_kwargs:
         kwargs.update(ppo_kwargs)
 
-    model = MaskablePPO(**kwargs)
+    if resume_from is not None:
+        # Warm-start from a prior checkpoint. SB3 lets .load() override the
+        # env plus select kwargs (learning rate, clip range, ent coef, etc.),
+        # so the user can fine-tune a saved policy on a harder regime or a
+        # slower learning schedule.
+        # If the prior run saved VecNormalize stats (same path + .vecnormalize.pkl),
+        # reuse them so the reward normalizer continues from the trained scale
+        # instead of resetting its running mean.
+        if isinstance(vec_env, VecNormalize):
+            resume_path = Path(resume_from)
+            stats_path = resume_path.with_suffix(resume_path.suffix + ".vecnormalize.pkl")
+            if stats_path.exists():
+                vec_env = VecNormalize.load(str(stats_path), vec_env.venv)
+                vec_env.norm_reward = True  # keep reward norm on during continued training
+
+        override = {k: v for k, v in kwargs.items() if k not in ("policy", "env", "seed")}
+        model = MaskablePPO.load(
+            str(resume_from),
+            env=vec_env,
+            device=device,
+            custom_objects=override,
+        )
+        model.set_env(vec_env)
+    else:
+        model = MaskablePPO(**kwargs)
 
     callbacks: list[Any] = []
     if checkpoint_freq > 0 and save_path is not None:
@@ -196,6 +244,11 @@ def train_maskable_ppo(
         out = Path(save_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         model.save(str(out))
+        # Persist VecNormalize stats next to the model so --resume-from can
+        # restore the reward normalizer instead of restarting its running mean.
+        if isinstance(vec_env, VecNormalize):
+            stats_path = out.with_suffix(out.suffix + ".vecnormalize.pkl")
+            vec_env.save(str(stats_path))
 
     return model
 
@@ -237,6 +290,26 @@ def _describe_policy_kwargs(policy_kwargs: dict[str, Any] | None) -> dict[str, A
     return out
 
 
+def _json_safe(obj: Any) -> Any:
+    """Replace callables / torch classes with a descriptive string."""
+    if callable(obj):
+        return f"<callable:{getattr(obj, '__name__', repr(obj))}>"
+    return str(obj)
+
+
+def _describe_ppo_kwargs(ppo_kwargs: dict[str, Any] | None) -> dict[str, Any]:
+    """JSON-safe ppo_kwargs (callables such as lr schedules stringified)."""
+    if not ppo_kwargs:
+        return {}
+    out: dict[str, Any] = {}
+    for k, v in ppo_kwargs.items():
+        if callable(v):
+            out[k] = f"<callable:{getattr(v, '__name__', repr(v))}>"
+        else:
+            out[k] = v
+    return out
+
+
 def write_model_sidecar(
     save_path: str | Path,
     *,
@@ -250,6 +323,7 @@ def write_model_sidecar(
     n_envs: int = 1,
     device: str = "auto",
     policy_kwargs: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> Path:
     """Write a small JSON describing how ``save_path`` was trained.
 
@@ -269,13 +343,15 @@ def write_model_sidecar(
         "reward_config": asdict(reward_config),
         "timesteps": int(timesteps),
         "seed": int(seed),
-        "ppo_kwargs": ppo_kwargs or {},
+        "ppo_kwargs": _describe_ppo_kwargs(ppo_kwargs),
         "n_envs": int(n_envs),
         "device": device,
         "policy_kwargs": _describe_policy_kwargs(policy_kwargs),
     }
+    if extra:
+        payload.update(extra)
     sidecar.parent.mkdir(parents=True, exist_ok=True)
-    sidecar.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    sidecar.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_safe))
     return sidecar
 
 
@@ -301,6 +377,8 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--completion-bonus", type=float, default=0.0)
     # PPO hyperparams (unset = SB3 default)
     p.add_argument("--learning-rate", type=float, default=None)
+    p.add_argument("--lr-schedule", choices=["constant", "linear"], default="constant",
+                   help="'linear' decays learning_rate to 0 over training. Requires --learning-rate.")
     p.add_argument("--n-steps", type=int, default=None)
     p.add_argument("--batch-size", type=int, default=None)
     p.add_argument("--n-epochs", type=int, default=None)
@@ -308,6 +386,17 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--gamma", type=float, default=None)
     p.add_argument("--gae-lambda", type=float, default=None)
     p.add_argument("--clip-range", type=float, default=None)
+    p.add_argument("--clip-range-vf", type=float, default=None,
+                   help="Clip range for the value function (stabilizes critic). SB3 default is None (unclipped).")
+    # Stability / continuation
+    p.add_argument("--normalize-reward", action="store_true",
+                   help="Wrap the vec env in VecNormalize(norm_reward=True). "
+                        "Stabilizes critic learning across regimes with very different reward magnitudes.")
+    p.add_argument("--reward-clip", type=float, default=10.0,
+                   help="VecNormalize reward clip magnitude (only applies with --normalize-reward).")
+    p.add_argument("--resume-from", type=str, default=None,
+                   help="Path to an existing .zip to warm-start from. Hyperparameter flags on this "
+                        "invocation override the checkpoint's originals (fine-tuning).")
     # Compute / parallelism
     p.add_argument("--n-envs", type=int, default=1,
                    help="Parallel environments via SubprocVecEnv. 1 keeps the "
@@ -329,8 +418,12 @@ def _build_argparser() -> argparse.ArgumentParser:
 
 def _ppo_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
     keys = ("learning_rate", "n_steps", "batch_size", "n_epochs",
-            "ent_coef", "gamma", "gae_lambda", "clip_range")
-    return {k: getattr(args, k) for k in keys if getattr(args, k) is not None}
+            "ent_coef", "gamma", "gae_lambda", "clip_range", "clip_range_vf")
+    kwargs = {k: getattr(args, k) for k in keys if getattr(args, k) is not None}
+    # Linear LR decay: SB3 accepts a callable(progress_remaining) → lr.
+    if args.lr_schedule == "linear" and args.learning_rate is not None:
+        kwargs["learning_rate"] = _linear_schedule(args.learning_rate)
+    return kwargs
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -394,6 +487,9 @@ def main(argv: list[str] | None = None) -> None:
         env_factory_builder=_factory_for if args.n_envs > 1 else None,
         device=args.device,
         policy_kwargs=policy_kwargs or None,
+        normalize_reward=args.normalize_reward,
+        reward_clip=args.reward_clip,
+        resume_from=args.resume_from,
     )
 
     if args.save_path:
@@ -409,6 +505,12 @@ def main(argv: list[str] | None = None) -> None:
             n_envs=args.n_envs,
             device=args.device,
             policy_kwargs=policy_kwargs or None,
+            extra={
+                "normalize_reward": bool(args.normalize_reward),
+                "reward_clip": float(args.reward_clip),
+                "lr_schedule": args.lr_schedule,
+                "resume_from": args.resume_from,
+            },
         )
 
 

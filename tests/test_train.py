@@ -152,6 +152,60 @@ class TestTraining:
         assert meta["policy_kwargs"]["net_arch"] == [32, 32]
         assert meta["policy_kwargs"]["activation_fn"] == "gelu"
 
+    def test_normalize_reward_and_resume_from(self, tmp_path: Path):
+        """--normalize-reward writes stats; --resume-from warm-starts from a .zip."""
+        import json
+
+        from cluster_scheduler.train import main as train_main
+
+        # First training pass with VecNormalize reward stats.
+        seed_path = tmp_path / "seed.zip"
+        train_main([
+            "--timesteps", "128",
+            "--seed", "0",
+            "--num-machines", "3",
+            "--num-jobs", "10",
+            "--arrival-rate", "2.0",
+            "--normalize-reward",
+            "--n-steps", "64",
+            "--batch-size", "32",
+            "--n-epochs", "1",
+            "--log-dir", str(tmp_path / "runs_seed"),
+            "--save-path", str(seed_path),
+        ])
+        stats = tmp_path / "seed.zip.vecnormalize.pkl"
+        seed_meta = json.loads((tmp_path / "seed.zip.meta.json").read_text())
+        assert seed_path.exists()
+        assert stats.exists(), "VecNormalize stats must be saved next to the .zip"
+        assert seed_meta["normalize_reward"] is True
+
+        # Fine-tune from the seed checkpoint with a linear LR schedule.
+        out_path = tmp_path / "tuned.zip"
+        train_main([
+            "--timesteps", "128",
+            "--seed", "1",
+            "--num-machines", "3",
+            "--num-jobs", "10",
+            "--arrival-rate", "2.0",
+            "--normalize-reward",
+            "--learning-rate", "1e-4",
+            "--lr-schedule", "linear",
+            "--clip-range-vf", "0.2",
+            "--n-steps", "64",
+            "--batch-size", "32",
+            "--n-epochs", "1",
+            "--resume-from", str(seed_path),
+            "--log-dir", str(tmp_path / "runs_tuned"),
+            "--save-path", str(out_path),
+        ])
+        assert out_path.exists()
+        meta = json.loads((tmp_path / "tuned.zip.meta.json").read_text())
+        assert meta["lr_schedule"] == "linear"
+        assert meta["resume_from"] == str(seed_path)
+        assert meta["ppo_kwargs"]["clip_range_vf"] == 0.2
+        # learning_rate is a callable with a linear schedule, stringified.
+        assert str(meta["ppo_kwargs"]["learning_rate"]).startswith("<callable:")
+
     def test_checkpoints_written(self, tmp_path: Path):
         save_path = tmp_path / "ppo.zip"
         train_maskable_ppo(
