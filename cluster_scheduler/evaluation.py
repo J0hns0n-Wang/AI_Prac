@@ -131,37 +131,39 @@ def summarize(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
 def default_regimes() -> list[RegimeSpec]:
     """Canonical held-out regimes for testing generalization.
 
-    These cover the knobs the project's report commits to stressing:
-    arrival-rate shifts, burstiness, demand distributions, and cluster size.
+    Each regime is tuned to produce non-trivial queueing (~60-100% CPU
+    utilization) so schedulers actually differentiate. Arrival rates are
+    calibrated against the default demand distribution (cpu_range (1,4),
+    duration_range (1,10) → ~13.75 CPU-sec per job) and cluster capacity.
     """
     return [
         RegimeSpec(
             name="light_poisson",
-            workload_config=WorkloadConfig(num_jobs=100, arrival_rate=0.8),
+            workload_config=WorkloadConfig(num_jobs=200, arrival_rate=5.0),
             sim_config=SimulatorConfig(num_machines=10),
         ),
         RegimeSpec(
             name="heavy_poisson",
-            workload_config=WorkloadConfig(num_jobs=100, arrival_rate=3.0),
+            workload_config=WorkloadConfig(num_jobs=200, arrival_rate=8.0),
             sim_config=SimulatorConfig(num_machines=10),
         ),
         RegimeSpec(
             name="bursty",
             workload_config=WorkloadConfig(
-                num_jobs=100,
-                arrival_rate=1.5,
+                num_jobs=200,
+                arrival_rate=4.0,
                 burst_enabled=True,
-                burst_arrival_rate=6.0,
-                burst_probability=0.1,
-                burst_length=5,
+                burst_arrival_rate=12.0,
+                burst_probability=0.15,
+                burst_length=8,
             ),
             sim_config=SimulatorConfig(num_machines=10),
         ),
         RegimeSpec(
             name="large_jobs",
             workload_config=WorkloadConfig(
-                num_jobs=60,
-                arrival_rate=1.0,
+                num_jobs=150,
+                arrival_rate=3.0,
                 cpu_range=(3.0, 6.0),
                 memory_range=(4.0, 12.0),
             ),
@@ -169,12 +171,12 @@ def default_regimes() -> list[RegimeSpec]:
         ),
         RegimeSpec(
             name="small_cluster",
-            workload_config=WorkloadConfig(num_jobs=100, arrival_rate=1.5),
+            workload_config=WorkloadConfig(num_jobs=150, arrival_rate=2.0),
             sim_config=SimulatorConfig(num_machines=4),
         ),
         RegimeSpec(
             name="wide_cluster",
-            workload_config=WorkloadConfig(num_jobs=200, arrival_rate=3.0),
+            workload_config=WorkloadConfig(num_jobs=400, arrival_rate=6.0),
             sim_config=SimulatorConfig(num_machines=20),
         ),
     ]

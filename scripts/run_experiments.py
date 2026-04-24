@@ -49,12 +49,7 @@ def _load_model(model_path: str):
 
 
 def _build_rl_scheduler(model, regime: RegimeSpec):
-    """Build an RLScheduler bound to a specific regime's cluster shape.
-
-    RLScheduler needs ``sim_config`` for obs normalization and
-    ``queue_capacity`` for the queue-length feature, so it must be rebuilt
-    per regime.
-    """
+    """Build an RLScheduler bound to a specific regime's cluster shape."""
     from cluster_scheduler.scheduler import RLScheduler
 
     return RLScheduler(
@@ -64,46 +59,46 @@ def _build_rl_scheduler(model, regime: RegimeSpec):
     )
 
 
-def _compatible_regimes(regimes: list[RegimeSpec], model) -> tuple[list[RegimeSpec], list[RegimeSpec]]:
-    """Split regimes into (compatible, skipped) given the model's action space.
+def _models_by_num_machines(model_paths: list[str]) -> dict[int, object]:
+    """Load each .zip and key it by the policy's action_space.n (= num_machines).
 
-    A Discrete(n)-action policy cannot be applied to clusters with a different
-    number of machines — both the mask length and the obs shape would mismatch.
+    A Discrete(n)-action policy can only be applied to clusters with exactly
+    n machines; this lets the runner dispatch the right model per regime.
     """
-    n_actions = int(model.action_space.n)
-    compatible, skipped = [], []
-    for r in regimes:
-        if r.sim_config.num_machines == n_actions:
-            compatible.append(r)
-        else:
-            skipped.append(r)
-    return compatible, skipped
+    table: dict[int, object] = {}
+    for p in model_paths:
+        m = _load_model(p)
+        n = int(m.action_space.n)
+        if n in table:
+            print(f"[run_experiments] Warning: overriding policy for num_machines={n} with {p}")
+        table[n] = m
+    return table
 
 
 def run(
     regimes: list[RegimeSpec],
     seeds: list[int],
-    model_path: str | None,
+    model_paths: list[str],
     out_dir: Path,
 ) -> pd.DataFrame:
-    model = _load_model(model_path) if model_path else None
-    if model is not None:
-        rl_regimes, skipped = _compatible_regimes(regimes, model)
-        if skipped:
-            names = ", ".join(r.name for r in skipped)
-            print(
-                f"[run_experiments] Skipping RL on regimes with mismatched "
-                f"num_machines (trained={model.action_space.n}): {names}"
-            )
-    else:
-        rl_regimes, skipped = [], []
+    models = _models_by_num_machines(model_paths) if model_paths else {}
+    if models:
+        print(f"[run_experiments] Loaded RL policies for num_machines in {sorted(models)}")
 
+    skipped: list[str] = []
     frames = []
     for regime in regimes:
         schedulers = _baseline_schedulers()
-        if model is not None and regime in rl_regimes:
-            schedulers["rl"] = _build_rl_scheduler(model, regime)
+        n = regime.sim_config.num_machines
+        if n in models:
+            schedulers["rl"] = _build_rl_scheduler(models[n], regime)
+        elif models:
+            skipped.append(f"{regime.name} (num_machines={n})")
         frames.append(sweep(schedulers, [regime], seeds))
+
+    if skipped:
+        print("[run_experiments] No matching RL policy for regimes: " + ", ".join(skipped))
+
     df = pd.concat(frames, ignore_index=True)
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -120,8 +115,10 @@ def run(
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--model", type=str, default=None,
-                   help="Path to a MaskablePPO .zip. If omitted, only baselines run.")
+    p.add_argument("--model", type=str, nargs="+", default=[],
+                   help="Paths to one or more MaskablePPO .zip files. Each is "
+                        "dispatched to regimes whose num_machines matches its "
+                        "action_space.n. If omitted, only baselines run.")
     p.add_argument("--seeds", type=int, nargs="+", default=[1000, 1001, 1002])
     p.add_argument("--out-dir", type=str, default="artifacts/eval_run")
     return p.parse_args(argv)
@@ -132,7 +129,7 @@ def main(argv: list[str] | None = None) -> None:
     run(
         regimes=default_regimes(),
         seeds=list(args.seeds),
-        model_path=args.model,
+        model_paths=list(args.model),
         out_dir=Path(args.out_dir),
     )
 
