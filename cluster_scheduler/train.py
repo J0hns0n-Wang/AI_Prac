@@ -25,6 +25,7 @@ Usage (CLI):
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
 from typing import Any, Callable
 
@@ -42,6 +43,11 @@ from cluster_scheduler.workload import WorkloadConfig
 
 
 EnvFactory = Callable[[], gym.Env]
+
+# TensorBoard is optional. SB3 raises if tensorboard_log is set but the
+# tensorboard package isn't installed, so we only enable it when the
+# dependency is actually present. Monitor CSV logging is independent.
+_HAS_TENSORBOARD: bool = importlib.util.find_spec("tensorboard") is not None
 
 
 def _action_mask_fn(env: ClusterSchedulingEnv):
@@ -122,7 +128,7 @@ def train_maskable_ppo(
         policy="MlpPolicy",
         env=vec_env,
         seed=seed,
-        tensorboard_log=str(log_path) if log_path else None,
+        tensorboard_log=str(log_path) if (log_path and _HAS_TENSORBOARD) else None,
         verbose=0,
     )
     if ppo_kwargs:
