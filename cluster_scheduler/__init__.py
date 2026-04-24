@@ -2,7 +2,13 @@
 
 from cluster_scheduler.benchmark import BenchmarkResult, run_benchmark
 from cluster_scheduler.env import ClusterSchedulingEnv, RewardConfig
-from cluster_scheduler.evaluation import RegimeSpec, default_regimes, summarize, sweep
+from cluster_scheduler.evaluation import (
+    RegimeSpec,
+    arrival_rate_regimes,
+    default_regimes,
+    summarize,
+    sweep,
+)
 from cluster_scheduler.featurizers import (
     BasicFeaturizer,
     Featurizer,
@@ -50,6 +56,7 @@ __all__ = [
     "WorkloadConfig",
     "WorkloadGenerator",
     "compute_metrics",
+    "arrival_rate_regimes",
     "default_regimes",
     "mean_ci",
     "plot_arrival_sweep",

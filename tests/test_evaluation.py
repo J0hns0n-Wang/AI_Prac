@@ -7,6 +7,7 @@ import pytest
 from cluster_scheduler.evaluation import (
     METRIC_FIELDS,
     RegimeSpec,
+    arrival_rate_regimes,
     default_regimes,
     summarize,
     sweep,
@@ -113,6 +114,34 @@ class TestSummarize:
         np.testing.assert_allclose(summary["ci_lo"], summary["mean"])
         np.testing.assert_allclose(summary["ci_hi"], summary["mean"])
         assert (summary["n"] == 1).all()
+
+
+class TestArrivalRateRegimes:
+    def test_names_and_rates(self):
+        regimes = arrival_rate_regimes(
+            rates=[1.0, 2.5, 8.0],
+            sim_config=SimulatorConfig(num_machines=6),
+        )
+        assert [r.name for r in regimes] == ["rate_1.0", "rate_2.5", "rate_8.0"]
+        assert [r.workload_config.arrival_rate for r in regimes] == [1.0, 2.5, 8.0]
+
+    def test_sim_config_is_shared(self):
+        sc = SimulatorConfig(num_machines=7, cpu_per_machine=8, memory_per_machine=16)
+        regimes = arrival_rate_regimes(rates=[1.0, 2.0], sim_config=sc)
+        assert regimes[0].sim_config is sc and regimes[1].sim_config is sc
+
+    def test_workload_knobs_propagate(self):
+        base = WorkloadConfig(
+            num_jobs=42, arrival_rate=99.0,  # arrival_rate overridden per regime
+            cpu_range=(2.0, 5.0), memory_range=(3.0, 7.0),
+            duration_range=(4.0, 9.0),
+        )
+        regimes = arrival_rate_regimes(rates=[1.0, 4.0], base_workload=base)
+        for r in regimes:
+            assert r.workload_config.num_jobs == 42
+            assert r.workload_config.cpu_range == (2.0, 5.0)
+            assert r.workload_config.memory_range == (3.0, 7.0)
+            assert r.workload_config.duration_range == (4.0, 9.0)
 
 
 class TestDefaultRegimes:

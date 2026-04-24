@@ -19,9 +19,21 @@ from typing import Any
 
 import pandas as pd
 
-from cluster_scheduler.evaluation import RegimeSpec, default_regimes, summarize, sweep
+from cluster_scheduler.evaluation import (
+    RegimeSpec,
+    arrival_rate_regimes,
+    default_regimes,
+    summarize,
+    sweep,
+)
 from cluster_scheduler.featurizers import BasicFeaturizer, Featurizer
-from cluster_scheduler.report import plot_regime_bars, write_results_csv
+from cluster_scheduler.report import (
+    plot_arrival_sweep,
+    plot_regime_bars,
+    write_results_csv,
+)
+from cluster_scheduler.simulator import SimulatorConfig
+from cluster_scheduler.workload import WorkloadConfig
 from cluster_scheduler.scheduler import (
     BestFitScheduler,
     FirstFitScheduler,
@@ -143,6 +155,46 @@ def run(
     return df
 
 
+def run_arrival_sweep(
+    seeds: list[int],
+    model_paths: list[str],
+    out_dir: Path,
+    rates: tuple[float, ...] = (1.0, 2.0, 4.0, 6.0, 8.0, 10.0),
+    num_machines: int = 10,
+) -> pd.DataFrame:
+    """Sweep offered load on a fixed cluster and plot metric-vs-rate curves."""
+    regimes = arrival_rate_regimes(
+        rates=rates,
+        sim_config=SimulatorConfig(num_machines=num_machines),
+        base_workload=WorkloadConfig(num_jobs=200),
+    )
+    models = _models_by_num_machines(model_paths) if model_paths else {}
+
+    frames = []
+    for regime in regimes:
+        schedulers = _baseline_schedulers()
+        n = regime.sim_config.num_machines
+        if n in models:
+            model, meta = models[n]
+            schedulers["rl"] = _build_rl_scheduler(model, meta, regime)
+        frames.append(sweep(schedulers, [regime], seeds))
+    df = pd.concat(frames, ignore_index=True)
+
+    # Give plot_arrival_sweep the numeric x column it expects.
+    df["arrival_rate"] = df["regime"].map(lambda s: float(s.removeprefix("rate_")))
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    write_results_csv(df, out_dir / "arrival_sweep_raw.csv")
+    for metric in ("avg_waiting_time", "p99_waiting_time"):
+        plot_arrival_sweep(
+            df,
+            metric=metric,
+            out_path=out_dir / f"arrival_sweep_{metric}.png",
+            title=f"{metric} vs arrival rate (num_machines={num_machines})",
+        )
+    return df
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--model", type=str, nargs="+", default=[],
@@ -151,17 +203,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "action_space.n. If omitted, only baselines run.")
     p.add_argument("--seeds", type=int, nargs="+", default=[1000, 1001, 1002])
     p.add_argument("--out-dir", type=str, default="artifacts/eval_run")
+    p.add_argument("--arrival-sweep", action="store_true",
+                   help="Also generate an arrival-rate sweep on a fixed 10-machine "
+                        "cluster, emitting arrival_sweep_*.png plots alongside the "
+                        "default regime bars.")
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
+    out_dir = Path(args.out_dir)
     run(
         regimes=default_regimes(),
         seeds=list(args.seeds),
         model_paths=list(args.model),
-        out_dir=Path(args.out_dir),
+        out_dir=out_dir,
     )
+    if args.arrival_sweep:
+        run_arrival_sweep(
+            seeds=list(args.seeds),
+            model_paths=list(args.model),
+            out_dir=out_dir,
+        )
 
 
 if __name__ == "__main__":

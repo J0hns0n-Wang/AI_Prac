@@ -128,6 +128,48 @@ def summarize(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def arrival_rate_regimes(
+    rates: Sequence[float],
+    sim_config: SimulatorConfig | None = None,
+    base_workload: WorkloadConfig | None = None,
+) -> list[RegimeSpec]:
+    """Build a list of regimes that vary only ``arrival_rate``.
+
+    Cluster shape and all workload demand knobs stay fixed — only arrivals
+    change. Used to sweep load from under-utilized to saturated so plots
+    like :func:`cluster_scheduler.report.plot_arrival_sweep` can show how
+    each scheduler's wait times scale with offered load.
+
+    Args:
+        rates: Arrival rates (jobs / time unit) to evaluate.
+        sim_config: Cluster shape. Defaults to ``SimulatorConfig()``.
+        base_workload: Workload template. Defaults to ``WorkloadConfig()``.
+            Only ``arrival_rate`` is overridden per regime.
+
+    Returns:
+        ``[RegimeSpec]`` with names ``"rate_{r:.1f}"`` preserving input order.
+    """
+    sim_config = sim_config or SimulatorConfig()
+    base_workload = base_workload or WorkloadConfig()
+    out: list[RegimeSpec] = []
+    for r in rates:
+        wl = WorkloadConfig(
+            num_jobs=base_workload.num_jobs,
+            arrival_rate=float(r),
+            cpu_range=base_workload.cpu_range,
+            memory_range=base_workload.memory_range,
+            duration_range=base_workload.duration_range,
+            burst_enabled=base_workload.burst_enabled,
+            burst_arrival_rate=base_workload.burst_arrival_rate,
+            burst_probability=base_workload.burst_probability,
+            burst_length=base_workload.burst_length,
+        )
+        out.append(
+            RegimeSpec(name=f"rate_{r:.1f}", workload_config=wl, sim_config=sim_config)
+        )
+    return out
+
+
 def default_regimes() -> list[RegimeSpec]:
     """Canonical held-out regimes for testing generalization.
 
