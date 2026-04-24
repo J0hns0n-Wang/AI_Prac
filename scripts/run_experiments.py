@@ -42,23 +42,42 @@ def _baseline_schedulers() -> dict:
     }
 
 
-def _build_rl_scheduler(model_path: str, regime: RegimeSpec):
+def _load_model(model_path: str):
+    from sb3_contrib import MaskablePPO
+
+    return MaskablePPO.load(model_path)
+
+
+def _build_rl_scheduler(model, regime: RegimeSpec):
     """Build an RLScheduler bound to a specific regime's cluster shape.
 
     RLScheduler needs ``sim_config`` for obs normalization and
     ``queue_capacity`` for the queue-length feature, so it must be rebuilt
     per regime.
     """
-    from sb3_contrib import MaskablePPO
-
     from cluster_scheduler.scheduler import RLScheduler
 
-    model = MaskablePPO.load(model_path)
     return RLScheduler(
         model=model,
         sim_config=regime.sim_config,
         queue_capacity=regime.workload_config.num_jobs,
     )
+
+
+def _compatible_regimes(regimes: list[RegimeSpec], model) -> tuple[list[RegimeSpec], list[RegimeSpec]]:
+    """Split regimes into (compatible, skipped) given the model's action space.
+
+    A Discrete(n)-action policy cannot be applied to clusters with a different
+    number of machines — both the mask length and the obs shape would mismatch.
+    """
+    n_actions = int(model.action_space.n)
+    compatible, skipped = [], []
+    for r in regimes:
+        if r.sim_config.num_machines == n_actions:
+            compatible.append(r)
+        else:
+            skipped.append(r)
+    return compatible, skipped
 
 
 def run(
@@ -67,11 +86,23 @@ def run(
     model_path: str | None,
     out_dir: Path,
 ) -> pd.DataFrame:
+    model = _load_model(model_path) if model_path else None
+    if model is not None:
+        rl_regimes, skipped = _compatible_regimes(regimes, model)
+        if skipped:
+            names = ", ".join(r.name for r in skipped)
+            print(
+                f"[run_experiments] Skipping RL on regimes with mismatched "
+                f"num_machines (trained={model.action_space.n}): {names}"
+            )
+    else:
+        rl_regimes, skipped = [], []
+
     frames = []
     for regime in regimes:
         schedulers = _baseline_schedulers()
-        if model_path:
-            schedulers["rl"] = _build_rl_scheduler(model_path, regime)
+        if model is not None and regime in rl_regimes:
+            schedulers["rl"] = _build_rl_scheduler(model, regime)
         frames.append(sweep(schedulers, [regime], seeds))
     df = pd.concat(frames, ignore_index=True)
 
