@@ -206,6 +206,31 @@ class TestTraining:
         # learning_rate is a callable with a linear schedule, stringified.
         assert str(meta["ppo_kwargs"]["learning_rate"]).startswith("<callable:")
 
+    def test_heartbeat_and_banner_print_to_stdout(self, tmp_path: Path, capfd):
+        """Banner and heartbeat lines must appear on stdout with flush."""
+        from cluster_scheduler.train import main as train_main
+
+        save_path = tmp_path / "hb.zip"
+        train_main([
+            "--timesteps", "512",
+            "--seed", "0",
+            "--num-machines", "3",
+            "--num-jobs", "10",
+            "--arrival-rate", "2.0",
+            "--n-steps", "128",
+            "--batch-size", "32",
+            "--n-epochs", "1",
+            "--heartbeat-every", "128",
+            "--log-dir", str(tmp_path / "runs"),
+            "--save-path", str(save_path),
+        ])
+        out = capfd.readouterr().out
+        assert "[train] starting:" in out
+        assert "[heartbeat] starting run" in out
+        # At least one heartbeat step report.
+        assert "[heartbeat] " in out and "elapsed=" in out
+        assert "[train] done." in out
+
     def test_checkpoints_written(self, tmp_path: Path):
         save_path = tmp_path / "ppo.zip"
         train_maskable_ppo(

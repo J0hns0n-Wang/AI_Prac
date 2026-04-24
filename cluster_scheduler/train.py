@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
@@ -35,7 +36,7 @@ import gymnasium as gym
 import torch.nn as nn
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 try:
     from stable_baselines3.common.utils import LinearSchedule as _LinearSchedule
@@ -58,6 +59,58 @@ _ACTIVATION_BY_NAME: dict[str, type[nn.Module]] = {
     "relu": nn.ReLU,
     "gelu": nn.GELU,
 }
+
+
+class HeartbeatCallback(BaseCallback):
+    """Prints a one-line progress heartbeat to stdout at regular intervals.
+
+    Unlike SB3's ``progress_bar`` or ``verbose`` output, this always flushes
+    stdout, so it survives Python's block-buffering under non-TTY stdout
+    (Colab's ``!command``, Jupyter cells, piped logs, etc.). That's the
+    difference between seeing ``[heartbeat] 500000/8000000 ...`` every few
+    seconds and staring at a blank cell for an hour wondering if the run
+    is actually progressing.
+    """
+
+    def __init__(self, total_timesteps: int, every: int = 0):
+        super().__init__()
+        self.total_timesteps = int(total_timesteps)
+        # If every==0 pick ~50 heartbeats over the run, minimum 1000 steps.
+        self.every = (
+            int(every)
+            if every > 0
+            else max(self.total_timesteps // 50, 1000)
+        )
+        self._t0: float = 0.0
+        self._last_report: int = 0
+
+    def _on_training_start(self) -> None:  # type: ignore[override]
+        self._t0 = time.time()
+        self._last_report = 0
+        print(
+            f"[heartbeat] starting run of {self.total_timesteps:,} steps "
+            f"(report every {self.every:,})",
+            flush=True,
+        )
+
+    def _on_step(self) -> bool:  # type: ignore[override]
+        # self.num_timesteps already aggregates across all vec-env workers.
+        if self.num_timesteps - self._last_report >= self.every:
+            self._last_report = self.num_timesteps
+            elapsed = time.time() - self._t0
+            pct = 100.0 * self.num_timesteps / max(self.total_timesteps, 1)
+            fps = self.num_timesteps / elapsed if elapsed > 0 else 0.0
+            eta_s = (
+                (self.total_timesteps - self.num_timesteps) / fps
+                if fps > 0 else float("inf")
+            )
+            print(
+                f"[heartbeat] {self.num_timesteps:,}/{self.total_timesteps:,} "
+                f"({pct:5.1f}%) elapsed={elapsed:6.0f}s "
+                f"fps={fps:6.0f} eta={eta_s:6.0f}s",
+                flush=True,
+            )
+        return True
 
 
 EnvFactory = Callable[[], gym.Env]
@@ -124,6 +177,7 @@ def train_maskable_ppo(
     resume_from: str | Path | None = None,
     progress_bar: bool = False,
     verbose: int = 0,
+    heartbeat_every: int = 0,
 ) -> MaskablePPO:
     """Train a MaskablePPO policy on the given env factory.
 
@@ -229,6 +283,8 @@ def train_maskable_ppo(
         model = MaskablePPO(**kwargs)
 
     callbacks: list[Any] = []
+    if heartbeat_every >= 0:
+        callbacks.append(HeartbeatCallback(total_timesteps, every=heartbeat_every))
     if checkpoint_freq > 0 and save_path is not None:
         ckpt_dir = Path(save_path).parent
         ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -240,11 +296,27 @@ def train_maskable_ppo(
             )
         )
 
-    model.learn(
-        total_timesteps=total_timesteps,
-        callback=callbacks or None,
-        progress_bar=progress_bar,
-    )
+    try:
+        model.learn(
+            total_timesteps=total_timesteps,
+            callback=callbacks or None,
+            progress_bar=progress_bar,
+        )
+    except ImportError as exc:
+        # SB3's progress_bar=True requires tqdm + rich. Fall back silently.
+        if progress_bar and ("tqdm" in str(exc) or "rich" in str(exc)):
+            print(
+                "[train] --progress requested but tqdm/rich not installed; "
+                "falling back to heartbeat only. Fix with: pip install tqdm rich",
+                flush=True,
+            )
+            model.learn(
+                total_timesteps=total_timesteps,
+                callback=callbacks or None,
+                progress_bar=False,
+            )
+        else:
+            raise
 
     if save_path is not None:
         out = Path(save_path)
@@ -426,6 +498,9 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--verbose", type=int, default=0,
                    help="SB3 verbosity (0 silent, 1 info, 2 debug). With --progress, "
                         "set 1 to also see per-update stats like fps and ep_rew_mean.")
+    p.add_argument("--heartbeat-every", type=int, default=0,
+                   help="Print a stdout heartbeat every N env steps. 0 = auto "
+                        "(~50 heartbeats over the run). Set -1 to disable.")
     return p
 
 
@@ -441,6 +516,17 @@ def _ppo_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> None:
     args = _build_argparser().parse_args(argv)
+
+    # Early banner (flushed) so the user sees *something* within the first
+    # second of the training cell, even before torch / sb3 heavy imports
+    # finish inside subprocess workers.
+    print(
+        f"[train] starting: timesteps={args.timesteps:,} "
+        f"n_envs={args.n_envs} device={args.device} "
+        f"featurizer={args.featurizer} num_machines={args.num_machines} "
+        f"arrival_rate={args.arrival_rate} save_path={args.save_path}",
+        flush=True,
+    )
 
     sim_cfg = SimulatorConfig(
         num_machines=args.num_machines,
@@ -505,7 +591,9 @@ def main(argv: list[str] | None = None) -> None:
         resume_from=args.resume_from,
         progress_bar=args.progress,
         verbose=args.verbose,
+        heartbeat_every=args.heartbeat_every,
     )
+    print(f"[train] done. model saved to {args.save_path}", flush=True)
 
     if args.save_path:
         write_model_sidecar(

@@ -55,8 +55,12 @@ PPO on this env is env-step-bound on a single process. Use `--n-envs` to run
 many parallel simulators via `SubprocVecEnv` so the GPU stays fed, and bump
 the policy network size — a `[256, 256, 128]` MLP is microscopic for an A100.
 
+Launch Python with `-u` so stdout flushes line-by-line (Colab's `!command`
+is not a TTY and otherwise buffers output until the cell finishes):
+
 ```bash
-python -m cluster_scheduler.train \
+pip install -q tqdm rich tensorboard
+python -u -m cluster_scheduler.train \
     --timesteps 8000000 \
     --n-envs 32 --device cuda \
     --policy-hidden 256 256 --activation gelu \
@@ -68,9 +72,23 @@ python -m cluster_scheduler.train \
     --learning-rate 2.5e-4 --lr-schedule linear \
     --ent-coef 0.005 --clip-range-vf 0.2 \
     --gamma 0.999 --gae-lambda 0.95 \
+    --progress --verbose 1 \
     --save-path artifacts/ppo_m10_big.zip \
     --log-dir runs/ppo_m10_big
 ```
+
+**What to expect within the first minute:**
+
+- `[train] starting: timesteps=... n_envs=... ...` — confirms the script is
+  alive (should appear within a few seconds).
+- 10-20s of harmless TF / CUDA library re-registration warnings, one set per
+  SubprocVecEnv worker. Safe to ignore.
+- `[heartbeat] starting run of 8,000,000 steps (report every 160,000)` —
+  training has actually begun.
+- Every ~2% of training: `[heartbeat] 160,000/8,000,000 ( 2.0%) elapsed=Ys
+  fps=F eta=Zs`.
+- If `--progress` is on and `tqdm` / `rich` are installed, a live progress
+  bar also renders below the heartbeat lines.
 
 Additional stability / continuation knobs:
 
