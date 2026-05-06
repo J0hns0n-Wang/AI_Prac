@@ -5,9 +5,10 @@
 **Title:** Learning Cluster-Scheduling Policies that Improve Tail Latency
 
 **Team members (Cornell NetIDs):**
-- Frank Dai — `<NetID>`
-- Johnson Wang — `<NetID>`
-- Jerry Ji — `<NetID>`
+
+- Frank Dai — sd924
+- Johnson Wang — jw2693
+- Jerry Ji — rj378
 
 **AI keywords:** Reinforcement learning, Proximal Policy Optimization (PPO),
 action masking, deep learning, sequential decision making, neural attention.
@@ -34,7 +35,7 @@ In the original proposal we set out to study reinforcement learning for an
 classical scheduling heuristics like First-Fit, Best-Fit, and Shortest-Job-
 First (SJF) make decisions based on a single rule of thumb each, but a
 production cluster's user-visible quality of service depends on getting
-many decisions right at once — picking the *right* machine, packing well,
+many decisions right at once — picking the _right_ machine, packing well,
 not starving long jobs, and reacting to load spikes. We hypothesized that
 a deep RL policy, trained against a faithful simulator, could learn to
 balance these concerns better than any single heuristic.
@@ -66,7 +67,7 @@ and then documented as a negative result.
 poor way to differentiate schedulers. At low load, every scheduler is
 optimal (no waiting). At high load, schedulers' relative strengths and
 weaknesses emerge but in different ways depending on the workload's
-*shape*: bursty arrivals stress one set of decisions, large jobs stress
+_shape_: bursty arrivals stress one set of decisions, large jobs stress
 another, small clusters yet another. We expanded to six controlled
 regimes — `light_poisson`, `heavy_poisson`, `bursty`, `large_jobs`,
 `small_cluster`, `wide_cluster` — and reported results across all of
@@ -121,11 +122,11 @@ order they appear when training and evaluating a policy.
 
 Cluster scheduling fits naturally into the MDP framework. We define:
 
-- **State** *s*: a snapshot of all machines' CPU and memory utilization,
+- **State** _s_: a snapshot of all machines' CPU and memory utilization,
   the current job awaiting placement, and the queue of jobs that have
   arrived but cannot yet fit anywhere.
-- **Action** *a*: an integer in `{0, …, M-1}` selecting a machine. The
-  environment supplies an action mask: machine *i* is masked off
+- **Action** _a_: an integer in `{0, …, M-1}` selecting a machine. The
+  environment supplies an action mask: machine _i_ is masked off
   whenever it cannot fit the current job. Under masking the policy's
   effective action space is the set of fittable machines, which can
   be empty.
@@ -134,9 +135,10 @@ Cluster scheduling fits naturally into the MDP framework. We define:
   which is the earlier of the next arrival or the next completion.
   Jobs that arrive while no machine can hold them join the wait queue
   and are reconsidered after each completion.
-- **Reward**: the dense per-step reward is `-waiting_time -
-  λ_b · |queue|`, where `waiting_time` is the placed job's queue
-  delay and `λ_b = 0.1` is a backlog-penalty coefficient. A one-time
+- **Reward**: the dense per-step reward is
+  $-\text{waiting\_time} - \lambda_b \cdot |\text{queue}|$, where
+  $\text{waiting\_time}$ is the placed job's queue delay and
+  $\lambda_b = 0.1$ is a backlog-penalty coefficient. A one-time
   bonus of `+1.0` is added on the final step. The negative-waiting
   term incentivizes fast placement; the backlog term encourages
   draining the queue rather than locally optimal greedy choices that
@@ -180,7 +182,7 @@ designed a "rich" featurizer that exposes:
 - **Backlog totals**: total CPU and total memory demand summed over
   the wait queue, normalized by total cluster capacity.
 - **Per-machine post-placement headroom**: how much CPU and memory
-  each machine would have *after* accepting the current job. This
+  each machine would have _after_ accepting the current job. This
   feature is the most physically meaningful one — it directly tells
   the policy "if you place here, you'll still be able to fit jobs
   in the future."
@@ -196,13 +198,14 @@ in both phases.
 ### 1.3.4 Reward shaping and stability
 
 The default reward (`-waiting_time`) gives a learning signal but is
-sparse: a placement at time *t* is rewarded based only on its own
+sparse: a placement at time _t_ is rewarded based only on its own
 queue delay, not on whether queueing is building up cluster-wide. We
 added two shaping terms:
 
-- A **backlog penalty** `-λ_b · |queue|` per step encourages global
-  drainage. The policy now sees a small negative signal whenever the
-  queue is growing, even before any individual job has waited long.
+- A **backlog penalty** $-\lambda_b \cdot |\text{queue}|$ per step
+  encourages global drainage. The policy now sees a small negative
+  signal whenever the queue is growing, even before any individual
+  job has waited long.
 - A **completion bonus** `+ b_c` on the terminal step explicitly
   rewards finishing the workload. This counters episodes where the
   policy's value function attaches negative value to terminal states.
@@ -216,8 +219,8 @@ explosions that we observed in unstable training runs. The running
 statistics are saved alongside each model so any later resume can
 pick up the calibrated scale rather than restart it.
 
-A **linear learning-rate schedule** decaying from `2.5 × 10⁻⁴` to `0`
-over training trades exploration early for exploitation late. We also
+A **linear learning-rate schedule** decaying from $2.5 \times 10^{-4}$
+to $0$ over training trades exploration early for exploitation late. We also
 clip the value-function loss (`clip_range_vf = 0.2`), which
 empirically prevents the critic from overshooting on large advantage
 estimates early in training.
@@ -280,9 +283,10 @@ and a model trained on a 3-machine cluster successfully predicts on a
 5-machine cluster through the same `MaskablePPO.load` path. **Full
 training, however, collapses.** Across many configurations of reward
 scale, learning rate, entropy coefficient, and `VecNormalize`
-on/off, the policy reliably reports `entropy_loss ≈ −0.14` (entropy
-~0.14 nats — near-deterministic) after a single PPO update, with
-`approx_kl` on the order of 10⁻⁵ to 10⁻⁷; gradients then vanish and
+on/off, the policy reliably reports an `entropy_loss` of about
+$-0.14$ (entropy near $0.14$ nats — near-deterministic) after a
+single PPO update, with `approx_kl` on the order of $10^{-5}$ to
+$10^{-7}$; gradients then vanish and
 training stalls. We attempted small-gain orthogonal initialization on
 the custom heads (the standard fix for actor collapse) and per-step
 reward rescaling without success. The most likely culprits are
@@ -319,7 +323,7 @@ whether the project succeeded:
 - **Q3 — Source of gains.** Are the learned policy's wins attributable
   to better admission control (fitting more jobs in less time) or to
   better packing/ordering of the same set of jobs? In other words,
-  do schedulers achieve different *cluster utilizations*, or do they
+  do schedulers achieve different _cluster utilizations_, or do they
   achieve the same utilization with different waiting-time profiles?
 - **Q4 — Recipe robustness across cluster sizes.** Does the same
   training recipe — featurizer, reward shape, hyperparameters —
@@ -352,7 +356,7 @@ is meaningful work for any scheduler to do:
 
 Three policies, trained with the same recipe (`RichFeaturizer`,
 dense reward with backlog penalty 0.1 and completion bonus 1.0,
-`VecNormalize`, linear LR schedule from 2.5 × 10⁻⁴ to 0, two-layer
+`VecNormalize`, linear LR schedule from $2.5 \times 10^{-4}$ to $0$, two-layer
 256-unit GeLU MLP, 10 SubprocVecEnv workers, 8 million environment
 steps), differing only in cluster size:
 
@@ -396,18 +400,18 @@ highlight the relevant entries here.
 
 **99th-percentile waiting time** (lower is better):
 
-| regime | First-Fit | Best-Fit | RL | best |
-| --- | --- | --- | --- | --- |
-| `light_poisson` | 3.149 | 2.971 | **2.878** | RL |
-| `heavy_poisson` | **12.383** | 13.211 | 13.023 | First-Fit |
-| `bursty` | 9.109 | 9.142 | **9.007** | RL |
-| `large_jobs` | 16.656 | 16.629 | **16.530** | RL |
-| `small_cluster` | 7.747 | **6.844** | 7.562 | Best-Fit |
+| regime          | First-Fit  | Best-Fit  | RL         | best      |
+| --------------- | ---------- | --------- | ---------- | --------- |
+| `light_poisson` | 3.149      | 2.971     | **2.878**  | RL        |
+| `heavy_poisson` | **12.383** | 13.211    | 13.023     | First-Fit |
+| `bursty`        | 9.109      | 9.142     | **9.007**  | RL        |
+| `large_jobs`    | 16.656     | 16.629    | **16.530** | RL        |
+| `small_cluster` | 7.747      | **6.844** | 7.562      | Best-Fit  |
 
 RL is the best scheduler on **three of five informative regimes**
 (`light_poisson`, `bursty`, `large_jobs`). On the remaining two
 (`heavy_poisson`, `small_cluster`) it ranks within 5% of the best —
-*within the 95% CI overlap*. (`wide_cluster` is omitted because all
+_within the 95% CI overlap_. (`wide_cluster` is omitted because all
 four schedulers hit zero wait.)
 
 **95th-percentile waiting time:** RL achieves the best p95 on
@@ -432,13 +436,13 @@ The story flips entirely on the tail. SJF's tail metrics are the
 **worst** of any scheduler in every congested regime, often by a
 wide margin:
 
-| regime | RL p99 | SJF p99 | RL beats SJF by |
-| --- | --- | --- | --- |
-| `light_poisson` | 2.878 | 5.774 | **2.01×** |
-| `heavy_poisson` | 13.023 | 24.351 | **1.87×** |
-| `bursty` | 9.007 | 19.741 | **2.19×** |
-| `large_jobs` | 16.530 | 41.115 | **2.49×** |
-| `small_cluster` | 7.562 | 12.763 | **1.69×** |
+| regime          | RL p99 | SJF p99 | RL beats SJF by |
+| --------------- | ------ | ------- | --------------- |
+| `light_poisson` | 2.878  | 5.774   | **2.01×**       |
+| `heavy_poisson` | 13.023 | 24.351  | **1.87×**       |
+| `bursty`        | 9.007  | 19.741  | **2.19×**       |
+| `large_jobs`    | 16.530 | 41.115  | **2.49×**       |
+| `small_cluster` | 7.562  | 12.763  | **1.69×**       |
 
 The mechanism is straightforward: SJF systematically defers long
 jobs in favor of short ones, which improves the mean (most jobs
@@ -461,13 +465,13 @@ where the tail wins come from. We test this by examining cluster
 **utilization** (fraction of available CPU-seconds actually used by
 jobs):
 
-| regime | First-Fit | Best-Fit | SJF | RL |
-| --- | --- | --- | --- | --- |
-| `light_poisson` | 0.689 | 0.689 | 0.684 | 0.688 |
-| `heavy_poisson` | 0.774 | 0.777 | 0.756 | 0.774 |
-| `bursty` | 0.740 | 0.736 | 0.725 | 0.730 |
-| `large_jobs` | 0.649 | 0.647 | 0.627 | 0.646 |
-| `small_cluster` | 0.763 | 0.761 | 0.752 | 0.758 |
+| regime          | First-Fit | Best-Fit | SJF   | RL    |
+| --------------- | --------- | -------- | ----- | ----- |
+| `light_poisson` | 0.689     | 0.689    | 0.684 | 0.688 |
+| `heavy_poisson` | 0.774     | 0.777    | 0.756 | 0.774 |
+| `bursty`        | 0.740     | 0.736    | 0.725 | 0.730 |
+| `large_jobs`    | 0.649     | 0.647    | 0.627 | 0.646 |
+| `small_cluster` | 0.763     | 0.761    | 0.752 | 0.758 |
 
 Utilization is within **0.3 percentage points** across all four
 schedulers in every regime. Every scheduler completes the same set
@@ -499,7 +503,7 @@ script, with cluster size as the only nominal change, produces a
 working policy at every size we tested.
 
 The negative result of Section 1.3.7 (set-attention) shows that
-*architectural* generalization across cluster sizes is harder than
+_architectural_ generalization across cluster sizes is harder than
 recipe robustness: producing a single policy that runs on multiple
 sizes is not the same as having a recipe that produces a working
 policy per size.
@@ -512,8 +516,8 @@ policy per size.
   to produce queueing. We document the result honestly rather than
   hide it.
 - **5 seeds yields wide CIs** in some cells (notably p99 on
-  `large_jobs`). Close calls (e.g., RL ≈ FF on `heavy_poisson` p99)
-  should be read as ties, not upsets.
+  `large_jobs`). Close calls (e.g., RL near FF on `heavy_poisson`
+  p99) should be read as ties, not upsets.
 - **Synthetic workloads only.** All evaluations use Poisson or
   bursty Poisson arrivals over configurable demand ranges. We do
   not evaluate on real production traces; transferring from
@@ -540,7 +544,7 @@ as we have formalized it:
 4. The training recipe is robust enough that the same script
    produces a working policy at three different cluster sizes with
    only workload arrival rate retuned per-size.
-5. Cross-cluster *architectural* generalization (a single policy that
+5. Cross-cluster _architectural_ generalization (a single policy that
    runs across cluster sizes) is harder; our set-attention attempt
    fails to train despite passing all unit tests, and we leave
    diagnosing it as future work.
@@ -550,21 +554,21 @@ as we have formalized it:
 # References
 
 1. Coffman, E. G., Garey, M. R., & Johnson, D. S. (1996).
-   *Approximation algorithms for bin packing: A survey*. PWS Publishing Co.
-2. Dean, J., & Barroso, L. A. (2013). *The tail at scale*.
+   _Approximation algorithms for bin packing: A survey_. PWS Publishing Co.
+2. Dean, J., & Barroso, L. A. (2013). _The tail at scale_.
    Communications of the ACM, 56(2), 74–80.
-3. Huang, S., & Ontañón, S. (2022). *A closer look at invalid action
-   masking in policy gradient algorithms*. FLAIRS.
+3. Huang, S., & Ontañón, S. (2022). _A closer look at invalid action
+   masking in policy gradient algorithms_. FLAIRS.
 4. Mao, H., Alizadeh, M., Menache, I., & Kandula, S. (2016).
-   *Resource management with deep reinforcement learning*. HotNets.
+   _Resource management with deep reinforcement learning_. HotNets.
 5. Mao, H., Schwarzkopf, M., Venkatakrishnan, S. B., Meng, Z., &
-   Alizadeh, M. (2019). *Learning scheduling algorithms for data
-   processing clusters*. SIGCOMM.
+   Alizadeh, M. (2019). _Learning scheduling algorithms for data
+   processing clusters_. SIGCOMM.
 6. Schulman, J., Wolski, F., Dhariwal, P., Radford, A., & Klimov, O.
-   (2017). *Proximal policy optimization algorithms*. arXiv:1707.06347.
+   (2017). _Proximal policy optimization algorithms_. arXiv:1707.06347.
 7. Verma, A., Pedrosa, L., Korupolu, M., Oppenheimer, D., Tune, E., &
-   Wilkes, J. (2015). *Large-scale cluster management at Google with
-   Borg*. EuroSys.
+   Wilkes, J. (2015). _Large-scale cluster management at Google with
+   Borg_. EuroSys.
 
 **Software resources:**
 
