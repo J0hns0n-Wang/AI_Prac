@@ -1,4 +1,10 @@
-# Learning Cluster-Scheduling Policies that Improve Tail Latency
+---
+title: "Learning Cluster-Scheduling Policies that Improve Tail Latency"
+geometry: margin=1in
+fontsize: 11pt
+linestretch: 1.1
+colorlinks: true
+---
 
 ## Title page
 
