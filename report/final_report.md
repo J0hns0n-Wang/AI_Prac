@@ -6,8 +6,6 @@ linestretch: 1.1
 colorlinks: true
 ---
 
-## Title page
-
 **Title:** Learning Cluster-Scheduling Policies that Improve Tail Latency
 
 **Team members (Cornell NetIDs):**
@@ -15,6 +13,10 @@ colorlinks: true
 - Frank Dai — sd924
 - Johnson Wang — jw2693
 - Jerry Ji — rj378
+
+**GitHub repository:** https://github.com/J0hns0n-Wang/AI_Prac
+
+**Presentation Video:** https://drive.google.com/file/d/1J3OxEyh1s9ys4PsY0_f7pcrvAwvkkjcG/view?usp=sharing
 
 **AI keywords:** Reinforcement learning, Proximal Policy Optimization (PPO),
 action masking, deep learning, sequential decision making, neural attention.
